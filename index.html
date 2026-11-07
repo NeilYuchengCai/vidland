@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grand Duchy of Vidland · Civil Affairs and Immigration Portal</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="vidland.css">
+<script src="vidland-store.js"></script>
+<script src="vidland-i18n.js"></script>
+<script src="vidland-core.js"></script>
+<style>
+  .form-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+  .aside-card{margin-bottom:18px}
+  .route-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-top:10px}
+  .route-legend i{display:inline-block;width:9px;height:9px;margin-right:5px;border:1px solid var(--line-2)}
+  .notice-item{border-left:3px solid var(--gold);background:#faf7ee;padding:10px 13px;margin-bottom:9px;font-size:12px;line-height:1.65}
+  .notice-item .ts{font-family:var(--mono);font-size:10px;color:var(--muted);display:block;margin-top:5px}
+  .notice-item.good{border-left-color:var(--green);background:#f2f9f4}
+  .notice-item.bad{border-left-color:var(--red);background:#fdf2f0}
+  .notice-item.info{border-left-color:var(--navy-2);background:#f1f5fa}
+  .cert-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .cert-row:last-child{border-bottom:0}
+  .oath-text{font-family:var(--serif);font-size:16px;line-height:1.95;background:var(--paper-2);border:1px solid var(--line-2);padding:20px 24px;white-space:pre-wrap;color:#22303e}
+  .instrument-text{font-family:var(--serif);font-size:13.5px;line-height:1.9;white-space:pre-wrap;max-height:52vh;overflow:auto;background:var(--paper-2);border:1px solid var(--line);padding:20px 24px}
+  .ref-switch{display:flex;gap:6px;margin-top:10px}
+  .ref-switch input{flex:1;min-width:0;padding:6px 9px;border:1px solid var(--line-2);font-family:var(--mono);font-size:11px}
+  .pending-box{border:1px dashed var(--line-2);padding:10px 12px;margin-bottom:8px;background:#fffdf4}
+  #home-view[hidden], #sub-view[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div id="masthead"></div>
+<div id="subbar"></div>
+<div class="wrap">
+  <div id="home-view">
+  <div class="hero">
+    <div class="eyebrow" id="h-eyebrow"></div>
+    <h1 id="h-title"></h1>
+    <div class="lead" id="h-lead"></div>
+    <div class="watermark">VIDLAND</div>
+  </div>
+
+  <div class="grid g-main">
+    <div>
+      <div class="doc" id="route-doc">
+        <div class="doc-head">
+          <div><div class="kicker" id="route-kicker"></div><h2 id="route-title"></h2>
+          <div class="sub" id="route-sub"></div></div>
+          <span class="badge plain" id="route-badge"></span>
+        </div>
+        <div class="doc-body">
+          <div class="route" id="route-bar"></div>
+          <div class="grid g3" id="stage-cards"></div>
+          <div class="route-legend">
+            <span><i style="background:#fffdf4"></i><span id="lg-cur"></span></span>
+            <span><i style="background:#eaf3ec"></i><span id="lg-done"></span></span>
+            <span><i style="background:repeating-linear-gradient(135deg,#faf8f1,#faf8f1 4px,#f0ece0 4px,#f0ece0 8px)"></i><span id="lg-lock"></span></span>
+          </div>
+        </div>
+        <div class="doc-foot"><span id="route-foot"></span><span class="docnum" id="route-num"></span></div>
+      </div>
+
+      <div class="doc" id="leap-doc">
+        <div class="doc-head"><div><div class="kicker" id="leap-kicker"></div><h2 id="leap-title"></h2></div>
+          <span class="badge info" id="leap-badge"></span></div>
+        <div class="doc-body"><div class="small muted" id="leap-desc"></div><div id="leap-body" class="mt"></div></div>
+        <div class="doc-foot"><span id="leap-foot"></span><span class="docnum">EXC / 1</span></div>
+      </div>
+
+      <div class="doc" id="cert-doc">
+        <div class="doc-head"><div><div class="kicker" id="cert-kicker"></div><h2 id="cert-title"></h2></div>
+          <button class="btn secondary sm" data-act="issue-identity" id="cert-issue"></button></div>
+        <div class="doc-body" id="cert-list"></div>
+        <div class="doc-foot"><span id="cert-foot"></span><span class="docnum" id="cert-num"></span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="doc aside-card" id="file-doc">
+        <div class="doc-head"><div><div class="kicker" id="file-kicker"></div><h3 id="file-title"></h3>
+          <div class="sub" id="file-sub"></div></div></div>
+        <div class="doc-body" id="file-body"></div>
+        <div class="doc-foot"><span id="file-foot"></span></div>
+      </div>
+
+      <div class="doc aside-card" id="status-doc">
+        <div class="doc-head"><div><div class="kicker" id="st-kicker"></div><h3 id="st-title"></h3></div></div>
+        <div class="doc-body" id="st-body"></div>
+      </div>
+
+      <div class="doc aside-card" id="pending-doc">
+        <div class="doc-head"><div><div class="kicker" id="pd-kicker"></div><h3 id="pd-title"></h3></div></div>
+        <div class="doc-body" id="pd-body"></div>
+      </div>
+
+      <div class="doc aside-card" id="notice-doc">
+        <div class="doc-head"><div><div class="kicker" id="nt-kicker"></div><h3 id="nt-title"></h3></div></div>
+        <div class="doc-body" id="nt-body"></div>
+        <div class="doc-foot"><span id="nt-foot"></span></div>
+      </div>
+    </div>
+  </div>
+  </div>
+  <div id="sub-view" hidden></div>
+</div>
+<div id="footer"></div>
+
+<script>
+(function () {
+  'use strict';
+  var V = window.Vidland, t = V.t, esc = V.esc, fmt = V.fmt;
+  var I = window.VidlandI18N;
+
+  var view = null;              /* {type:'form', stage, round, continuationOf} */
+  var formApi = null;
+  var draftCache = { values: null, bio: null };
+  var instrumentViewed = false;
+  var _seq = 0, lastState = null;
+
+  var UI = V.init('portal', function () { render(); });
+
+  /* ---------- draft persistence (sealed, never plaintext PII at rest) ---------- */
+  var draftKey = function () { return 'vdl.v1.draft.' + V.getSession(); };
+  var _draftTimer = null;
+  function saveDraft() {
+    if (!view || view.type !== 'form' || !formApi) return;
+    clearTimeout(_draftTimer);
+    draftCache.values = formApi.values();
+    draftCache.bio = formApi.biometrics();
+    _draftTimer = setTimeout(function () {
+      V.sealBroadcast({ values: draftCache.values, bio: draftCache.bio, at: V.now() })
+        .then(function (env) { window.VidlandStore.setItem(draftKey(), JSON.stringify(env)); })
+        .catch(function () {});
+    }, 350);
+  }
+  function loadDraft() {
+    try {
+      var env = JSON.parse(window.VidlandStore.getItem(draftKey()) || 'null');
+      if (!env) return null;
+      return V.openBroadcast(env);
+    } catch (e) { return null; }
+  }
+  function clearDraft() {
+    draftCache = { values: null, bio: null };
+    try { window.VidlandStore.removeItem(draftKey()); } catch (e) {}
+  }
+  function captureForm() {
+    if (view && view.type === 'form' && formApi) {
+      try { draftCache.values = formApi.values(); draftCache.bio = formApi.biometrics(); } catch (e) {}
+    }
+  }
+
+  /* ---------- helpers ---------- */
+  function credLabel(c) { return t(c === 'NONE' ? 'cr.none' : c === 'CITIZEN' ? 'cr.CITIZEN' : 'cr.' + c); }
+  function snapshot(sub) {
+    var i = (sub && sub.identity) || {};
+    return {
+      name: i.name || [i.surname, i.given].filter(Boolean).join(' ') || '—',
+      surname: i.surname || '', given: i.given || '',
+      dob: i.dob || '', nationality: i.nationality || i.natCurrent || '',
+      passportNo: i.passportNo || '', address: i.address || '',
+      credentialLabel: credLabel(sub ? sub.credential : 'NONE'),
+      credentialCode: sub ? sub.credentialCode : null,
+      nationalId: sub ? sub.nationalId : null
+    };
+  }
+  /* Terminals are independent stations. This returns a NAME for written
+     directions only — the portal never links or redirects to another one. */
+  function inspectTerminal(level) { return level === 'R' ? t('g.border') : t('g.interior'); }
+  function gradeText(g) { return g ? t('o.grade.' + String(g).toLowerCase()) : t('s.awaitingGrade'); }
+
+  function noticeInfo(n) {
+    var d = n.data || {};
+    switch (n.kind) {
+      case 'APP_LODGED': return { cls:'info', title:t('s.lodged'), body:t('st.' + d.stage + '.name') + ' · ' + t('p.form.round' + (d.round === 2 ? '2' : '1')) };
+      case 'INSPECTION_DIRECTED': return { cls:'info', title:t('p.inspect.title'), body:t('p.inspect.body') + ' [' + t('i.level.' + d.level) + ']' };
+      case 'CERT_ISSUED': return { cls:'good', title:t('i.certReady'), body:d.code + ' · ' + t('i.level.' + d.level) + ' · ' + gradeText(d.grade) };
+      case 'M_AWAITING_GRADE': return { cls:'info', title:t('s.awaitingGrade'), body:t('i.awaitGrade') + ' · ' + (d.code || '') };
+      case 'M_GRADED': return { cls: d.grade === 'EXCELLENT' ? 'good' : 'info', title:t('i.gradeReturned'), body:gradeText(d.grade) + ' · ' + (d.code || '') };
+      case 'IDENTITY_CERT_ISSUED': return { cls:'good', title:t('p.certs.issued'), body:d.code || '' };
+      case 'OATH_SUMMONED': return { cls:'good', title:t('p.oath.title'), body:t('p.oath.body') };
+      case 'OATH_TAKEN': return { cls:'info', title:t('s.oathDone'), body:t('p.oath.pending') };
+      case 'APPROVED': return { cls:'good', title:t('p.approved.title'), body:t('p.approved.body') + ' · ' + (d.code || '') };
+      case 'PREAPPROVED': return { cls:'info', title:t('p.preact.title'), body:t('p.preact.body') + ' [' + t('i.level.' + d.level) + ']' };
+      case 'WAITLISTED': return { cls:'info', title:t('p.waitlist.title'), body:t('p.waitlist.body') };
+      case 'REJECTED': return { cls:'bad', title:t('p.reject.title'), body:t('p.reject.reason') + ': ' + (d.reason || '—') };
+      case 'LEAP_LODGED': return { cls:'info', title:t('p.leap.pending'), body:d.id || '' };
+      case 'LEAP_INSPECTION': return { cls:'info', title:t('p.inspect.title'), body:t('p.leap.inspect') + ' [' + t('i.level.' + d.level) + ']' };
+      case 'LEAP_DECISION': return d.action === 'APPROVE'
+        ? { cls:'good', title:t('m.leap.granted'), body:t('m.leap.granted') }
+        : { cls:'bad', title:t('p.reject.title'), body:t('p.reject.reason') + ': ' + (d.reason || '—') };
+      case 'CITIZEN_CONFIRMED': return { cls:'good', title:t('p.citizen.title'), body:t('p.citizen.body') + ' · ' + (d.code || '') };
+      default: return { cls:'info', title:t('p.notices.title'), body:'' };
+    }
+  }
+
+  /* ---------- main render ---------- */
+  async function render() {
+    var my = ++_seq;
+    var s;
+    try { s = await V.Vault.state(); } catch (e) { s = V.Vault.blankState(); }
+    if (my !== _seq) return;
+    lastState = s;
+    var ref = V.getSession();
+    var sub = s.subjects[ref] || null;
+
+    document.getElementById('h-eyebrow').textContent = t('p.hero.eyebrow');
+    document.getElementById('h-title').textContent = t('p.hero.title');
+    document.getElementById('h-lead').textContent = t('p.hero.lead');
+
+    renderFile(s, ref, sub);
+    renderStatus(s, ref);
+    renderPending(s, ref);
+    renderNotices(s, ref);
+    renderRoute(s, ref);
+    renderLeap(s, ref);
+    renderCerts(s, ref);
+    await renderFormArea(s, ref, sub, my);
+    toggleView();
+  }
+  function toggleView() {
+    var home = document.getElementById('home-view');
+    var sub = document.getElementById('sub-view');
+    if (view && view.type === 'form') { home.hidden = true; sub.hidden = false; }
+    else { home.hidden = false; sub.hidden = true; sub.innerHTML = ''; }
+  }
+
+  function renderFile(s, ref, sub) {
+    document.getElementById('file-kicker').textContent = t('g.restricted');
+    document.getElementById('file-title').textContent = t('p.file.title');
+    document.getElementById('file-sub').textContent = t('p.file.sub');
+    var i = snapshot(sub);
+    var rows = [
+      [t('g.subjectRef'), '<span class="mono">' + esc(ref) + '</span>'],
+      [t('p.file.name'), esc(sub ? i.name : '—')],
+      [t('p.file.dob'), esc(sub ? i.dob || '—' : '—')],
+      [t('p.file.nationality'), esc(sub ? i.nationality || '—' : '—')],
+      [t('p.file.credential'), esc(credLabel(sub ? sub.credential : 'NONE'))],
+      [t('cr.code'), '<span class="mono">' + esc(sub && sub.credentialCode || '—') + '</span>'],
+      [t('g.nationalId'), '<span class="mono">' + esc(sub && sub.nationalId || '—') + '</span>']
+    ];
+    var h = '<div class="kv">' + rows.map(function (r) {
+      return '<div class="k">' + esc(r[0]) + '</div><div class="v">' + r[1] + '</div>';
+    }).join('') + '</div>';
+    if (!sub) h += '<div class="notice warn mt">' + esc(t('p.file.notOnFile')) + '</div>';
+    h += '<div class="small muted mt">' + esc(t('g.subjectRef')) + ' — ' + esc(t('i.verify.sub')) + '</div>' +
+      '<div class="ref-switch"><input data-refinput value="' + esc(ref) + '" aria-label="' + esc(t('g.subjectRef')) + '">' +
+      '<button class="btn sm secondary" data-act="ref-switch">' + esc(t('a.verify')) + '</button>' +
+      '<button class="btn sm secondary" data-act="ref-new">' + esc(t('a.create')) + '</button></div>';
+    document.getElementById('file-body').innerHTML = h;
+    document.getElementById('file-foot').textContent = t('x.sealed');
+  }
+
+  function renderStatus(s, ref) {
+    document.getElementById('st-kicker').textContent = t('st.order');
+    document.getElementById('st-title').textContent = t('p.status.title');
+    var cred = V.credential(s, ref);
+    var nxt = V.nextStage(cred);
+    var h = '<div class="route" style="grid-template-columns:repeat(5,1fr)">' + V.ORDER.map(function (st) {
+      var done = V.CRED_RANK[cred] >= V.CRED_RANK[V.CREDENTIAL_FOR[st]];
+      var cur = nxt === st;
+      return '<div class="route-node ' + (done ? 'done' : cur ? 'current' : '') + '">' +
+        '<div class="code">' + esc(st) + '</div><div class="nm">' + esc(t('st.' + st + '.name')) + '</div>' +
+        '<div class="st">' + esc(done ? t('s.issued') : cur ? t('p.route.current') : t('s.none')) + '</div></div>';
+    }).join('') + '</div>';
+    h += '<div class="notice"><span class="ttl">' + esc(t('g.secure')) + '</span>' + esc(t('p.status.hint')) + '</div>';
+    if (cred === 'CITIZEN' && s.subjects[ref]) {
+      h += '<div class="notice good"><span class="ttl">' + esc(t('p.citizen.title')) + '</span>' + esc(t('p.citizen.body')) +
+        '<div class="mono mt">' + esc(s.subjects[ref].nationalId || '') + '</div></div>';
+    }
+    document.getElementById('st-body').innerHTML = h;
+  }
+
+  function renderPending(s, ref) {
+    document.getElementById('pd-kicker').textContent = t('g.securityShort');
+    document.getElementById('pd-title').textContent = t('p.inspect.title');
+    var list = (s.pending[ref] || []).filter(function (p) { return !p.done; });
+    if (!list.length) { document.getElementById('pd-body').innerHTML = '<div class="small muted">' + esc(t('p.notices.empty')) + '</div>'; return; }
+    document.getElementById('pd-body').innerHTML = list.map(function (p) {
+      return '<div class="pending-box"><div class="small strong">' + esc(t('i.level.' + p.level)) + '</div>' +
+        '<div class="small muted">' + esc(t('i.pendingHint')) + '</div>' +
+        '<div class="small" style="margin-top:8px;color:var(--navy-2)">▸ ' +
+        esc(inspectTerminal(p.level)) + '</div></div>';
+    }).join('');
+  }
+
+  function renderNotices(s, ref) {
+    document.getElementById('nt-kicker').textContent = t('g.chancelleryShort');
+    document.getElementById('nt-title').textContent = t('p.notices.title');
+    document.getElementById('nt-foot').textContent = t('g.secure');
+    var list = (s.notices[ref] || []).slice().reverse().slice(0, 14);
+    if (!list.length) { document.getElementById('nt-body').innerHTML = '<div class="empty">' + esc(t('p.notices.empty')) + '</div>'; return; }
+    document.getElementById('nt-body').innerHTML = list.map(function (n) {
+      var info = noticeInfo(n);
+      return '<div class="notice-item ' + info.cls + '"><b>' + esc(info.title) + '</b><br>' + esc(info.body) +
+        '<span class="ts">' + esc(fmt(n.at)) + ' · ' + esc(n.id) + '</span></div>';
+    }).join('');
+  }
+
+  function renderRoute(s, ref) {
+    document.getElementById('route-kicker').textContent = t('g.official');
+    document.getElementById('route-title').textContent = t('p.route.title');
+    document.getElementById('route-sub').textContent = t('p.route.sub');
+    document.getElementById('route-badge').textContent = t('st.order');
+    document.getElementById('lg-cur').textContent = t('p.route.current');
+    document.getElementById('lg-done').textContent = t('p.route.done');
+    document.getElementById('lg-lock').textContent = t('p.route.locked');
+    document.getElementById('route-foot').textContent = t('p.status.hint');
+    document.getElementById('route-num').textContent = 'ROUTE / 1-5';
+    var cred = V.credential(s, ref);
+    var nxt = V.nextStage(cred);
+    document.getElementById('route-bar').innerHTML = V.ORDER.map(function (st, i) {
+      var x = V.stageState(s, ref, st);
+      var done = x.phase === 'DONE';
+      var cur = nxt === st;
+      return '<div class="route-node ' + (done ? 'done' : cur ? 'current' : '') + '">' +
+        '<div class="code">' + esc(st) + ' / ' + (i + 1) + '</div>' +
+        '<div class="nm">' + esc(t('st.' + st + '.name')) + '</div>' +
+        '<div class="st">' + esc(done ? t('p.route.done') : cur ? t('p.route.current') : t('st.order')) + '</div></div>';
+    }).join('');
+    var h = '';
+    V.ORDER.forEach(function (st) {
+      var x = V.stageState(s, ref, st);
+      var label = '', cls = 'secondary', act = 'stage', disabled = false, badge = '';
+      switch (x.phase) {
+        case 'DONE': label = t('p.route.done'); badge = '<span class="badge ok">' + esc(t('s.issued')) + '</span>'; disabled = true; break;
+        case 'AWAIT_DECISION': label = t('s.lodged'); badge = '<span class="badge pending">' + esc(t('s.pending')) + '</span>'; disabled = true; break;
+        case 'AWAIT_INSPECTION': label = t('p.inspect.title'); cls = 'gold'; badge = '<span class="badge pending">' + esc(t('s.inProgress')) + '</span>'; break;
+        case 'INIT': label = t('a.apply'); cls = ''; badge = '<span class="badge info">' + esc(t('s.ready')) + '</span>'; break;
+        case 'SECONDARY': label = t('p.form.round2'); cls = 'gold'; badge = '<span class="badge pending">' + esc(t('s.ready')) + '</span>'; break;
+        case 'REJECTED': label = t('a.reapply'); badge = '<span class="badge bad">' + esc(t('s.rejected')) + '</span>'; break;
+        case 'NOT_ELIGIBLE': label = t('p.route.locked'); cls = 'secondary'; badge = '<span class="badge neutral">' + esc(t('s.notEligible')) + '</span>'; break;
+        case 'GRADE_NOT_EXCELLENT': label = t('s.notEligible'); cls = 'secondary'; badge = '<span class="badge bad">' + esc(gradeText(x.cert && x.cert.grade)) + '</span>'; break;
+        case 'OATH': {
+          var os = V.oathState(s, ref);
+          if (os.phase === 'CONFIRMED') {
+            label = t('p.citizen.title'); disabled = true;
+            badge = '<span class="badge excellent">' + esc(t('s.citizen')) + '</span>';
+          } else if (os.phase === 'AWAIT_CONFIRM') {
+            label = t('p.oath.pending'); disabled = true;
+            badge = '<span class="badge pending">' + esc(t('s.oathDone')) + '</span>';
+          } else {
+            label = t('p.oath.title'); cls = 'gold';
+            badge = '<span class="badge excellent">' + esc(t('s.awaitingOath')) + '</span>';
+          }
+          break;
+        }
+        default: label = t('p.route.open'); cls = ''; badge = '<span class="badge info">' + esc(t('p.route.current')) + '</span>';
+      }
+      var locked = x.phase === 'NOT_ELIGIBLE';
+      h += '<div class="stage-card ' + (locked ? 'locked' : '') + '">' +
+        '<div class="top"><span class="code">' + esc(st) + ' / ' + (V.ORDER.indexOf(st) + 1) + '</span>' + badge + '</div>' +
+        '<h3>' + esc(t('st.' + st + '.name')) + '</h3>' +
+        '<div class="txt">' + esc(t('st.' + st + '.desc')) + '</div>' +
+        (x.reason ? '<div class="small" style="color:var(--red)">' + esc(t('p.reject.reason')) + ': ' + esc(x.reason) + '</div>' : '') +
+        (x.phase === 'AWAIT_INSPECTION' ? '<div class="small" style="color:var(--gold)">' + esc(t('i.level.' + x.inspection)) + '</div>' : '') +
+        '<button class="btn sm ' + cls + '" data-act="' + act + '" data-stg="' + st + '"' + (disabled ? ' disabled' : '') + '>' + esc(label) + '</button></div>';
+    });
+    document.getElementById('stage-cards').innerHTML = h;
+  }
+
+  function renderLeap(s, ref) {
+    document.getElementById('leap-kicker').textContent = t('g.official');
+    document.getElementById('leap-title').textContent = t('p.leap.title');
+    document.getElementById('leap-desc').textContent = t('p.leap.desc');
+    document.getElementById('leap-foot').textContent = t('p.leap.desc');
+    var x = V.leapState(s, ref);
+    var badge = t('s.none'), body = '', btn = '';
+    switch (x.phase) {
+      case 'READY': badge = t('s.ready'); btn = '<button class="btn" data-act="leap-open">' + esc(t('p.leap.open')) + '</button>'; break;
+      case 'AWAIT_DECISION': badge = t('s.pending'); body = '<div class="notice">' + esc(t('p.leap.pending')) + '</div>'; break;
+      case 'AWAIT_INSPECTION': badge = t('s.inProgress');
+        body = '<div class="notice info"><span class="ttl">' + esc(t('i.level.' + x.level)) + '</span>' + esc(t('p.leap.inspect')) + '</div>' +
+          '<div class="small strong" style="color:var(--gold)">▸ ' + esc(inspectTerminal(x.level)) + '</div>';
+        break;
+      case 'CONTINUE': badge = t('s.ready');
+        body = '<div class="notice good">' + esc(t('i.certReady')) + ' · ' + esc(t('p.leap.inspect')) + '</div>';
+        btn = '<button class="btn gold" data-act="leap-open" data-cont="' + esc(x.leap.id) + '">' + esc(t('a.continue')) + ' · ' + esc(t('p.form.round2')) + '</button>';
+        break;
+      case 'GRANTED': badge = t('s.approved'); body = '<div class="notice good"><span class="ttl">' + esc(t('m.leap.granted')) + '</span>' + esc(t('m.leap.granted')) + '</div>'; break;
+      case 'REJECTED': badge = t('s.rejected');
+        body = '<div class="notice bad"><span class="ttl">' + esc(t('p.reject.title')) + '</span>' + esc(x.reason || '') + '</div>';
+        btn = '<button class="btn sm secondary" data-act="leap-open">' + esc(t('a.reapply')) + '</button>'; break;
+    }
+    document.getElementById('leap-badge').textContent = badge;
+    document.getElementById('leap-body').innerHTML = body + (btn ? '<div class="btn-row">' + btn + '</div>' : '');
+  }
+
+  function renderCerts(s, ref) {
+    document.getElementById('cert-kicker').textContent = t('g.official');
+    document.getElementById('cert-title').textContent = t('p.certs.title');
+    document.getElementById('cert-issue').textContent = t('p.certs.issue');
+    document.getElementById('cert-foot').textContent = t('c.legalText');
+    var list = s.certificates.filter(function (c) { return c.ref === ref; }).sort(function (a, b) { return b.issuedAt - a.issuedAt; });
+    document.getElementById('cert-num').textContent = list.length + ' INSTR';
+    if (!list.length) { document.getElementById('cert-list').innerHTML = '<div class="empty"><span class="big">§</span>' + esc(t('p.certs.empty')) + '</div>'; return; }
+    var typeKey = { CLEARANCE:'p.certs.type.clearance', IDENTITY:'p.certs.type.identity', VISA:'p.certs.type.visa' };
+    document.getElementById('cert-list').innerHTML = list.map(function (c) {
+      var grade = c.status === 'AWAITING_GRADE' ? '<span class="badge pending">' + esc(t('s.awaitingGrade')) + '</span>'
+        : c.grade ? '<span class="badge ' + (c.grade === 'EXCELLENT' ? 'excellent' : c.grade === 'PASS' ? 'ok' : 'bad') + '">' + esc(gradeText(c.grade)) + '</span>' : '';
+      return '<div class="cert-row"><div><div class="mono small strong">' + esc(c.code) + '</div>' +
+        '<div class="small muted">' + esc(t(typeKey[c.kind] || 'g.official')) + (c.level ? ' · ' + esc(t('i.level.' + c.level)) : '') +
+        ' · ' + esc(fmt(c.issuedAt)) + '</div></div><div class="btn-row" style="margin:0">' + grade +
+        (c.status === 'AWAITING_GRADE' ? '' : '<button class="btn sm secondary" data-act="cert-dl" data-code="' + esc(c.code) + '">' + esc(t('a.download')) + '</button>') +
+        '</div></div>';
+    }).join('');
+  }
+
+  /* ---------- form area ---------- */
+  async function renderFormArea(s, ref, sub, my) {
+    var box = document.getElementById('sub-view');
+    if (!view || view.type !== 'form') { box.innerHTML = ''; box.hidden = true; formApi = null; return; }
+    box.hidden = false;
+    captureForm();
+    var seeded = await loadDraft();
+    var prefill = Object.assign({}, sub ? sub.identity : {}, draftCache.values || (seeded && seeded.values) || {});
+    if (draftCache.bio) { /* already captured */ }
+    else if (seeded && seeded.bio) draftCache.bio = seeded.bio;
+
+    var stage = view.stage, round = view.round;
+    var certOptions = s.certificates.filter(function (c) {
+      if (c.ref !== ref || c.kind !== 'CLEARANCE' || c.status !== 'VALID') return false;
+      if (stage === 'LEAP') return true;
+      if (stage === 'NAT') return c.level === 'M' && c.grade === 'EXCELLENT';
+      var lv = V.INSPECTION_FOR[stage];
+      return c.level === lv;
+    }).map(function (c) { return { code: c.code, grade: c.grade }; });
+
+    var head = '<div class="form-head"><div><div class="kicker" style="font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:700">' +
+      esc(t('g.official')) + '</div><h2 style="margin-top:4px">' + esc(t('p.form.title')) + ' · ' + esc(t('st.' + stage + '.full')) + '</h2>' +
+      '<div class="small muted">' + esc(round === 2 ? t('p.form.round2') : t('p.form.round1')) + ' · ' + esc(t('p.form.required')) + '</div></div>' +
+      '<button class="btn secondary sm" data-act="form-close">' + esc(t('a.back')) + '</button></div>';
+    if (stage === 'NAT') {
+      head += '<div class="notice warn"><span class="ttl">' + esc(t('p.form.readInstrument')) + '</span>' +
+        '<button class="btn sm gold" data-act="read-instrument">' + esc(t('a.read')) + ' · ' + esc(t('p.instrument.title')) + '</button></div>';
+    }
+    if (view.stage === 'C' && round === 1) head += '<div class="notice"><span class="ttl">' + esc(t('bio.title')) + '</span>' + esc(t('p.form.cameraReq')) + '</div>';
+    head += '<div class="doc"><div class="doc-body" id="form-fields"></div>' +
+      '<div class="doc-foot"><span>' + esc(t('x.sealed')) + '</span><span class="docnum">' + esc(ref) + '</span></div></div>' +
+      '<div class="btn-row" style="margin:16px 0 28px"><button class="btn lg gold" data-act="form-submit">' + esc(t('a.submit')) + '</button>' +
+      '<button class="btn lg secondary" data-act="form-close">' + esc(t('a.cancel')) + '</button></div>';
+    box.innerHTML = head;
+    formApi = V.renderForm(document.getElementById('form-fields'), stage, round, {
+      prefill: prefill, certOptions: certOptions,
+      continuation: !!view.continuationOf, bioSeed: draftCache.bio
+    });
+    /* restore values that were captured from a previous rendering */
+    if (draftCache.values) {
+      var c = document.getElementById('form-fields');
+      Object.keys(draftCache.values).forEach(function (k) {
+        var el = c.querySelector('[data-k="' + k + '"]');
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = !!draftCache.values[k];
+        else el.value = draftCache.values[k];
+      });
+    }
+  }
+
+  /* ---------- actions ---------- */
+  function openForm(stage, round, continuationOf) {
+    formApi = null;
+    view = { type: 'form', stage: stage, round: round || 1, continuationOf: continuationOf || null };
+    draftCache = { values: null, bio: null };
+    instrumentViewed = false;
+    render();
+  }
+  function closeForm() {
+    view = null; formApi = null; clearDraft();
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function submitForm() {
+    if (!formApi || !view) return;
+    if (!formApi.validate()) { formApi.focusFirstError(); return; }
+    if (view.stage === 'NAT' && !instrumentViewed) {
+      V.toast(t('p.form.readInstrument'), 'bad'); return;
+    }
+    var vals = formApi.values(), bio = formApi.biometrics();
+    var ref = V.getSession(), at = V.now();
+    var identity = {
+      name: [vals.surname, vals.given].filter(Boolean).join(' '),
+      surname: vals.surname, given: vals.given, dob: vals.dob,
+      nationality: vals.natCurrent, passportNo: vals.passportNo,
+      address: vals.address, email: vals.email, phone: vals.phone,
+      occupation: vals.occupation, marital: vals.marital
+    };
+    var id = V.uid(view.stage === 'LEAP' ? 'LEAP' : 'APP');
+    var common = {
+      id: id, ref: ref, at: at, identity: identity,
+      form: vals, biometrics: bio, signature: vals.signature,
+      submittedISO: new Date(at).toISOString(), stage: view.stage, round: view.round,
+      continuationOf: view.continuationOf || null
+    };
+    if (view.stage === 'LEAP') {
+      await V.Vault.submit({
+        type: 'LEAP', id: id, ref: ref, at: at, identity: identity,
+        target: vals.targetStatus, certRefs: vals.certRef ? [vals.certRef] : []
+      }, Object.assign({}, common, { type: 'LEAP' }));
+    } else {
+      await V.Vault.submit({
+        type: 'APPLICATION', id: id, ref: ref, at: at, identity: identity,
+        stage: view.stage, round: view.round,
+        certRefs: vals.certRef ? [vals.certRef] : []
+      }, Object.assign({}, common, { type: 'APPLICATION' }));
+    }
+    closeForm();
+    V.toast(t('p.form.submitted'), 'good');
+  }
+
+  async function initStage(stage) {
+    var s = await V.Vault.state(), ref = V.getSession();
+    var ok = V.isEligible(s, ref, stage);
+    V.toast(ok ? t('p.eligibility.ok') : t('p.eligibility.fail'), ok ? 'good' : 'bad');
+    if (!ok) return;
+    await V.Vault.submit({
+      type: 'STAGE_INIT', id: V.uid('INIT'), ref: ref, at: V.now(),
+      stage: stage, level: V.INSPECTION_FOR[stage]
+    });
+    render();
+  }
+
+  function openInstrument() {
+    V.modal(t('p.instrument.title'),
+      '<div class="instrument-text">' + esc(t('p.instrument.body')) + '</div>' +
+      '<label class="checkline-lg"><input type="checkbox" data-inst-ack><span>' + esc(t('fs.instrumentRead')) + '</span></label>',
+      [{ label: t('a.acknowledge'), cls: 'gold', onClick: function () {
+          var cb = document.querySelector('[data-inst-ack]');
+          if (cb && cb.checked) { instrumentViewed = true; V.toast(t('s.completed'), 'good'); }
+          else V.toast(t('p.form.readInstrument'), 'bad');
+        } }]);
+  }
+
+  function openOath() {
+    var html = '<div class="notice"><span class="ttl">' + esc(t('p.oath.title')) + '</span>' + esc(t('p.oath.body')) + '</div>' +
+      '<div class="oath-text">' + esc(t('p.oath.text')) + '</div>' +
+      '<label class="checkline-lg"><input type="checkbox" data-oath-ack><span>' + esc(t('p.oath.declare')) + '</span></label>' +
+      '<div class="field mt"><label>' + esc(t('p.form.signature')) + '</label><input data-oath-sign placeholder="' + esc(t('p.form.signatureHint')) + '"></div>';
+    V.modal(t('p.oath.title'), html, [
+      { label: t('a.cancel'), cls: 'secondary' },
+      { label: t('p.oath.submit'), cls: 'gold', onClick: takeOath }
+    ]);
+  }
+  async function takeOath() {
+    var cb = document.querySelector('[data-oath-ack]');
+    var sign = document.querySelector('[data-oath-sign]');
+    if (!cb || !cb.checked || !sign || !String(sign.value || '').trim()) {
+      V.toast(t('p.form.readInstrument'), 'bad'); return;
+    }
+    await V.Vault.submit({
+      type: 'OATH', id: V.uid('OATH'), ref: V.getSession(), at: V.now(),
+      signature: String(sign.value).trim(), instrument: t('p.oath.text')
+    });
+    V.toast(t('p.oath.pending'), 'good'); render();
+  }
+
+  async function issueIdentity() {
+    var s = await V.Vault.state(), ref = V.getSession(), sub = s.subjects[ref];
+    if (!sub) { V.toast(t('p.file.notOnFile'), 'bad'); return; }
+    var at = V.now(), ts = V.tsRecord(at), ccode = V.code('VDL-IDC');
+    var subj = snapshot(sub);
+    var spec = {
+      kind: 'IDENTITY', code: ccode, ref: ref, level: null, grade: null,
+      issuedAt: at, ts: ts, steps: V.instrumentSteps('IDENTITY'), subject: subj
+    };
+    await V.downloadCertificate(spec);
+    await V.Vault.submit({
+      type: 'IDENTITY_CERT', id: V.uid('IDC'), ref: ref, at: at,
+      certCode: ccode, ts: ts, subject: subj
+    }, Object.assign({}, spec, { type: 'IDENTITY_CERT' }));
+    V.toast(t('p.certs.issued'), 'good'); render();
+  }
+
+  /* ---------- delegated events ---------- */
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-act]');
+    if (!el) return;
+    var act = el.dataset.act;
+    switch (act) {
+      case 'stage': {
+        var stg = el.dataset.stg;
+        var s = lastState || {}, ref = V.getSession();
+        var x = V.stageState(s, ref, stg);
+        switch (x.phase) {
+          case 'READY': openForm(stg, 1); break;
+          case 'SECONDARY': openForm(stg, 2); break;
+          case 'REJECTED': openForm(stg, 1); break;
+          case 'INIT': initStage(stg); break;
+          case 'AWAIT_INSPECTION':
+            V.toast(t('p.inspect.body') + '  ▸  ' + inspectTerminal(x.inspection), 'good');
+            break;
+          case 'OATH': openOath(); break;
+          case 'NOT_ELIGIBLE': V.toast(t('p.eligibility.fail'), 'bad'); break;
+          case 'GRADE_NOT_EXCELLENT': V.toast(t('p.grade.other'), 'bad'); break;
+          default: break;
+        }
+        break;
+      }
+      case 'leap-open': openForm('LEAP', 1, el.dataset.cont || null); break;
+      case 'form-close': closeForm(); break;
+      case 'form-submit': submitForm(); break;
+      case 'read-instrument': openInstrument(); break;
+      case 'issue-identity': issueIdentity(); break;
+      case 'cert-dl': {
+        var s2 = lastState || {};
+        var c = s2.certificates && s2.certificates.find(function (z) { return z.code === el.dataset.code; });
+        if (c) V.downloadCertificate(V.certSpecFromRecord(c)).then(function () { V.toast(t('i.certReady'), 'good'); });
+        break;
+      }
+      case 'ref-switch': {
+        var inp = document.querySelector('[data-refinput]');
+        var v = inp && String(inp.value || '').trim();
+        if (v) { V.setSession(v); clearDraft(); render(); V.toast(t('i.verify.ok'), 'good'); }
+        break;
+      }
+      case 'ref-new': V.setSession(V.code('VDL-SUB')); clearDraft(); render(); break;
+    }
+  });
+
+  document.addEventListener('input', function (e) {
+    if (view && view.type === 'form' && e.target.closest && e.target.closest('#form-fields')) saveDraft();
+  });
+  document.addEventListener('change', function (e) {
+    if (view && view.type === 'form' && e.target.closest && e.target.closest('#form-fields')) saveDraft();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

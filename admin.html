@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grand Duchy of Vidland · Chancellery Central Authority</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="vidland.css">
+<script src="vidland-store.js"></script>
+<script src="vidland-i18n.js"></script>
+<script src="vidland-core.js"></script>
+<style>
+  .statgrid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:20px}
+  @media(max-width:1100px){.statgrid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:620px){.statgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .stat{background:var(--paper);border:1px solid var(--line);border-top:3px solid var(--navy);padding:14px 15px}
+  .stat .k{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .stat .v{font-family:var(--serif);font-size:28px;color:var(--navy);line-height:1.25;margin-top:4px}
+  .stat .s{font-size:10px;color:var(--gold);letter-spacing:.08em;text-transform:uppercase}
+  .decision-bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+  .reason-box{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+  .reason-box label{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--slate);font-weight:600;display:block;margin-bottom:5px}
+  .reason-box textarea{width:100%;min-height:70px;padding:9px 11px;border:1px solid var(--line-2);border-radius:2px;resize:vertical;font-size:13px}
+  .bio-strip{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .bio-strip img{width:88px;height:110px;object-fit:cover;border:1px solid var(--line-2)}
+  .grade-pick{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+  .app-detail{background:#fff;border:1px solid var(--line);padding:14px;max-height:46vh;overflow:auto}
+  .app-detail .kv{font-size:12px}
+  .leap-levels{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .sysline{display:flex;justify-content:space-between;gap:14px;padding:11px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+  .sysline .k{color:var(--slate);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+  .sysline .v{font-family:var(--mono);font-size:11.5px;word-break:break-all;text-align:right;max-width:70%}
+  .pane-title{font-family:var(--serif);font-size:21px;color:var(--navy)}
+</style>
+</head>
+<body>
+<div id="masthead"></div>
+<div id="subbar"></div>
+<div class="wrap">
+  <div class="hero">
+    <div class="eyebrow" id="hero-eyebrow"></div>
+    <h1 id="hero-title"></h1>
+    <div class="lead" id="hero-lead"></div>
+    <div class="small" style="margin-top:12px;color:var(--green);font-weight:600">◈ <span id="hero-session"></span></div>
+    <div class="watermark">VIDLAND</div>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div id="pane"><div class="empty">…</div></div>
+</div>
+<div id="footer"></div>
+
+<script>
+(function () {
+  'use strict';
+  var V = window.Vidland, t = V.t, esc = V.esc, fmt = V.fmt;
+
+  /* ==========================================================
+     THE MASTER KEY — present in this terminal ALONE.
+     The three civil terminals hold only the public component.
+     ========================================================== */
+  var PRIVATE_JWK = {
+    kty: "RSA",
+    n: "pD8cDO-qfdtwY817wi9kpyxL56OxZyO8GiGZq8Z_jOIDEVF9x-ELcWGNhuJWt8wrOn8wwn4cNJf1qaqdvzj81RXqkiJPU0qeu0sfqzy2yrft95InptJKN2CvwCTUcPzdwB-C-Iw5m_ooO2KSig5nM8vUbw-ZTtlHg10YQl6UXuw3PDOHYOqp_PBUHGg5bP3lqWWmF4MymxjkY4BShlqSBl809S1O4SVkwmebhNFYj6813Ulj23Ea60nExEVejEacqzuqJC0bxzTORZ4knplK75QI8SyRO4x-_vgfVLQbbYEA5jzhdpKN5BUGFM5VWX0ttjefcRUFo11vIGnbq4N8CQ",
+    e: "AQAB",
+    d: "ErRrNd_vayDb9km27-Dk1hL52_ns4KGVsOYlsYXMDdfJYKYGrIYo_vMMopFRLeJPA_zrKSMihCzQGc_n4hiT1pKF4bmNjh8_33WJOD-UU5bJv3mCEYH-WLsmmLu5A9sQR-puyG5zuxssjMLHjHhicWgjm7hLjcq51bB67EgIHp0aRozlTDVn6Sp2mVfLFuM68ykBZOl_QNeJMnUOY1qD-92zsrKrRDsyM60dqmUOtmvI4lXpGB-mxOkJiOQL0mI8OvPVYMw84uyLNtCJra0JHDj1uo-_YBjgHjCudoOnjUEH8EzGBANMaCVPDA4m8N34_cTJBnn7jJnGAwltRL7IFw",
+    p: "26bOark_xEXgmkoXawHmi0NC866Pg8LM9P3kHdHN-AuaOiIgzLrN-JD-Hrc9iEZmkHDfx_KPTg0D-ej9RnUTtFcVGt_0eZKgctAnoaVBFCSJZZyFZwIAUq6AnFIka8ZW9OP7MTFHcdv02Afn6-wOogAfsLfqDRgbo0--aBGxSr8",
+    q: "v20npqz1wOiPn1kwHtiioolCsns81vtTDRWCqFFA1njeNJbobP1sLTR4lcX0gJuEzGJryhxo5UDtQ-v7qnPF90tZtQbNeSjZ6dgVrqXm4EvRyXjKBCPCHrqq1judoH7TBUHpHU0nj15H0woQPbpwWfNTvflB83-8-09yEutv0zc",
+    dp: "DHifFa4o8bLp-rikNb4o4dVS0tUhbuC7lFlp_0tvP1shSZWweQ9OLIPG-eV7h-Y_YooWGpsqCctxY1oYL0zsbnvXRexbTB_IHly1M1dXp5YfevZ1GJEjhY5E3RtI2BmtzD-5fmSG4u8TKsTgJSQE_Ku3IOiAUHgC8bXQYMZIY68",
+    dq: "WN17gszYaW2M_xSQWkGHfpzp8aF0ZPjXXUOXHDxcNTR3M0K7M52SEopBUIZNM0b_J0Kpd3Io4AR8IQP0GPUV-e9o_bjiulRUlVJS_njV7VpFUZpZbgKLo2hU1o9mZZN6sv4eEhQ3QT8raLVLRNzAO4HSZmbITxoFyUTgWBgkGZE",
+    qi: "BDZt7F5BgrA1tM5oEyNmUmnZ6PwNmnX_N9uKziPht0EWnDyhbM4rL-y5L79TQixb-aI5KfUo2RJ6FiD1H0O1tFK7Md3TelduUS5MWNPCme9g2OrQeB29h3wFhE39IQmtUHt8EOPZBIUmWPYilr1J8nSPs0DDyW0929uIHkG_aOw"
+  };
+  function b64u8(s) { var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+  var _priv = null;
+  async function privKey() {
+    if (!_priv) _priv = crypto.subtle.importKey('jwk', PRIVATE_JWK,
+      { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+    return _priv;
+  }
+  V.registerAuthorityOpener(async function (env) {
+    var key = await privKey();
+    var raw = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, key, b64u8(env.ek));
+    var aes = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['decrypt']);
+    var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u8(env.iv), tagLength: 128 },
+      aes, b64u8(env.ct));
+    return JSON.parse(new TextDecoder().decode(plain));
+  });
+
+  /* Inspection protocols are shipped EMPTY by statute.
+     Every step and its content is authored, stored and promulgated
+     exclusively by the Chancellery Central Authority. No template,
+     preset item or suggested wording is delivered with the system. */
+
+  /* ---------- state ---------- */
+  var TABS = [
+    ['overview','m.tab.overview'],['subjects','m.tab.subjects'],['apps','m.tab.apps'],
+    ['protocol','m.tab.protocol'],['inspections','m.tab.inspections'],['certs','m.tab.certs'],
+    ['leap','m.tab.leap'],['ledger','m.tab.ledger'],['system','m.tab.system']
+  ];
+  var active = 'overview';
+  var protoLevel = 'R', protoLang = 'en';
+  var protoDraft = null;
+  var _seq = 0;
+  var lastState = null;
+
+  function getProto(s) {
+    if (!protoDraft) {
+      protoDraft = {};
+      ['R','Z','A','M'].forEach(function (lv) {
+        protoDraft[lv] = (s.protocol[lv] || []).map(function (x) {
+          return { id: x.id || V.uid('STP'), title: Object.assign({}, x.title), detail: Object.assign({}, x.detail) };
+        });
+      });
+    }
+    return protoDraft;
+  }
+
+  var UI = V.init('admin', function () { render(); });
+
+  async function render() {
+    var my = ++_seq;
+    var s;
+    try { s = await V.Vault.state(); } catch (e) { s = V.Vault.blankState(); }
+    if (my !== _seq) return;
+    lastState = s;
+    document.getElementById('hero-eyebrow').textContent = t('m.hero.eyebrow');
+    document.getElementById('hero-title').textContent = t('m.hero.title');
+    document.getElementById('hero-lead').textContent = t('m.hero.lead');
+    document.getElementById('hero-session').textContent = t('m.session') + '  ·  ' + t('m.common.realtime');
+    var pending = s.applications.filter(function (a) { return a.status === 'LODGED'; }).length;
+    document.getElementById('tabs').innerHTML = TABS.map(function (x) {
+      var cnt = x[0] === 'apps' && pending ? '<span class="count">' + pending + '</span>' : '';
+      return '<button data-tab="' + x[0] + '" class="' + (active === x[0] ? 'on' : '') + '">' + esc(t(x[1])) + cnt + '</button>';
+    }).join('');
+    var pane = document.getElementById('pane');
+    pane.innerHTML = ({
+      overview: paneOverview, subjects: paneSubjects, apps: paneApps,
+      protocol: paneProtocol, inspections: paneInspections, certs: paneCerts,
+      leap: paneLeap, ledger: paneLedger, system: paneSystem
+    })[active](s);
+  }
+
+  /* ---------- panes ---------- */
+  function paneOverview(s) {
+    var pendingApps = s.applications.filter(function (a) { return a.status === 'LODGED'; });
+    var awaitingM = s.certificates.filter(function (c) { return c.status === 'AWAITING_GRADE'; }).length;
+    var stats = [
+      ['m.ov.subjects', Object.keys(s.subjects).length, 'g.sealed'],
+      ['m.ov.petitions', s.applications.length, 's.lodged'],
+      ['m.ov.awaiting', pendingApps.length, 's.pending'],
+      ['m.ov.inspections', s.inspections.length, 's.completed'],
+      ['m.ov.instruments', s.certificates.length, 's.issued'],
+      ['m.ov.relay', V.Vault.inbox().filter(function (e) { return !s.processed[e.id]; }).length, 'g.secure']
+    ];
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.authorityShort')) +
+      '</div><h2>' + esc(t('m.ov.title')) + '</h2></div><span class="badge ok">' + esc(t('m.common.realtime')) + '</span></div><div class="doc-body">';
+    h += '<div class="statgrid">' + stats.map(function (x) {
+      return '<div class="stat"><div class="k">' + esc(t(x[0])) + '</div><div class="v">' + x[1] + '</div><div class="s">' + esc(t(x[2])) + '</div></div>';
+    }).join('') + '</div>';
+    h += '<div class="notice good"><span class="ttl">' + esc(t('m.ov.relayOk')) + '</span>' + esc(t('m.ov.relayNote')) + '</div>';
+    h += '<h3 class="pane-title" style="margin:22px 0 10px">' + esc(t('m.ov.queue')) + '</h3>';
+    if (!pendingApps.length) h += '<div class="empty">' + esc(t('m.common.none')) + '</div>';
+    else {
+      h += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>' + esc(t('m.app.col.id')) + '</th><th>' + esc(t('m.app.col.stage')) +
+        '</th><th>' + esc(t('m.app.col.ref')) + '</th><th>' + esc(t('m.app.col.lodged')) + '</th><th>' + esc(t('m.app.col.act')) + '</th></tr></thead><tbody>';
+      pendingApps.forEach(function (a) {
+        h += '<tr><td class="mono">' + esc(a.id) + '</td><td>' + esc(t('st.' + a.stage + '.name')) + ' · ' + esc(t('p.form.round' + (a.round === 2 ? '2' : '1'))) +
+          '</td><td class="mono">' + esc(a.ref) + '</td><td class="mono">' + esc(fmt(a.lodgedAt)) + '</td>' +
+          '<td class="act"><button class="btn sm" data-act="adj" data-id="' + esc(a.id) + '">' + esc(t('m.common.confirm')) + '</button></td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    if (awaitingM) h += '<div class="notice warn mt"><span class="ttl">' + esc(t('s.awaitingGrade')) + '</span>' + esc(t('m.insp.gradeNote')) + ' (' + awaitingM + ')</div>';
+    h += '</div><div class="doc-foot"><span>' + esc(t('x.sealed')) + '</span><span class="docnum">REG / ' + esc(fmt(s.createdAt)) + '</span></div></div>';
+    return h;
+  }
+
+  function paneSubjects(s) {
+    var rows = Object.keys(s.subjects).map(function (k) { return s.subjects[k]; });
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.restricted')) + '</div><h2>' + esc(t('m.sub.title')) +
+      '</h2><div class="sub">' + esc(t('m.sub.sub')) + '</div></div>' +
+      '<button class="btn" data-act="sub-create">' + esc(t('m.sub.create')) + '</button></div><div class="doc-body">';
+    if (!rows.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.sub.empty')) + '</div>';
+    else {
+      h += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+        ['m.sub.col.ref','m.sub.col.name','m.sub.col.nat','m.sub.col.status','m.sub.col.code','m.sub.col.nid','m.sub.col.act']
+          .map(function (k) { return '<th>' + esc(t(k)) + '</th>'; }).join('') + '</tr></thead><tbody>';
+      rows.forEach(function (x) {
+        h += '<tr><td class="mono">' + esc(x.ref) + '</td><td>' + esc(x.identity.name || [x.identity.surname, x.identity.given].filter(Boolean).join(' ') || '—') +
+          '</td><td>' + esc(x.identity.nationality || '—') + '</td><td>' + statusBadge(x.credential) +
+          '</td><td class="mono">' + esc(x.credentialCode || '—') + '</td><td class="mono">' + esc(x.nationalId || '—') + '</td>' +
+          '<td class="act"><button class="btn sm secondary" data-act="sub-edit" data-id="' + esc(x.ref) + '">' + esc(t('a.edit')) + '</button> ' +
+          '<button class="btn sm danger" data-act="sub-del" data-id="' + esc(x.ref) + '">' + esc(t('a.delete')) + '</button></td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    h += '</div><div class="doc-foot"><span>' + esc(t('m.common.realtime')) + '</span><span class="docnum">' + rows.length + ' REC</span></div></div>';
+    return h;
+  }
+
+  function statusBadge(c) {
+    var map = { NONE:'neutral', C:'info', D:'info', TR:'pending', PR:'ok', CITIZEN:'excellent' };
+    var key = c === 'NONE' ? 's.none' : c === 'CITIZEN' ? 's.citizen' : 'cr.' + c;
+    return '<span class="badge ' + (map[c] || 'neutral') + '">' + esc(t(key)) + '</span>';
+  }
+
+  function paneApps(s) {
+    var apps = s.applications.slice().sort(function (a, b) { return b.lodgedAt - a.lodgedAt; });
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.restricted')) + '</div><h2>' + esc(t('m.app.title')) +
+      '</h2><div class="sub">' + esc(t('m.app.sub')) + '</div></div>' +
+      '<span class="badge info">' + esc(t('m.app.sealedNote')) + '</span></div><div class="doc-body">';
+    if (!apps.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.app.empty')) + '</div>';
+    else {
+      h += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+        ['m.app.col.id','m.app.col.stage','m.app.col.round','m.app.col.ref','m.app.col.lodged','m.app.col.state','m.app.col.act']
+          .map(function (k) { return '<th>' + esc(t(k)) + '</th>'; }).join('') + '</tr></thead><tbody>';
+      apps.forEach(function (a) {
+        var st = a.status;
+        var bk = st === 'LODGED' ? 'pending' : st === 'APPROVED' ? 'ok' : st === 'REJECTED' ? 'bad' : 'info';
+        h += '<tr><td class="mono">' + esc(a.id) + '</td><td>' + esc(t('st.' + a.stage + '.name')) +
+          '</td><td class="mono">' + a.round + '</td><td class="mono">' + esc(a.ref) + '</td><td class="mono">' + esc(fmt(a.lodgedAt)) +
+          '</td><td><span class="badge ' + bk + '">' + esc(appStatus(st)) + '</span></td>' +
+          '<td class="act"><button class="btn sm secondary" data-act="adj" data-id="' + esc(a.id) + '">' + esc(t('a.view')) + '</button></td></tr>';
+        if (a.reason) h += '<tr><td colspan="7" style="background:#fdf3f1;color:var(--red)">' + esc(t('a.reason')) + ': ' + esc(a.reason) + '</td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    h += '</div><div class="doc-foot"><span>' + esc(t('x.sealed')) + '</span><span class="docnum">' + apps.length + ' PET</span></div></div>';
+    return h;
+  }
+  function appStatus(st) {
+    return t({ LODGED:'s.lodged', PREAPPROVED:'s.preapproved', APPROVED:'s.approved',
+      REJECTED:'s.rejected', WAITLISTED:'s.waitlisted' }[st] || 's.unknown');
+  }
+
+  function paneProtocol(s) {
+    var p = getProto(s);
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.securityShort')) + '</div><h2>' + esc(t('m.proto.title')) +
+      '</h2><div class="sub">' + esc(t('m.proto.sub')) + '</div></div>' +
+      '<div class="btn-row" style="margin:0"><button class="btn gold sm" data-act="proto-save">' + esc(t('a.save')) + '</button></div></div><div class="doc-body">';
+    h += '<div class="tabs">' + ['R','Z','A','M'].map(function (lv) {
+      return '<button data-act="proto-level" data-lv="' + lv + '" class="' + (protoLevel === lv ? 'on' : '') + '">' +
+        esc(t('i.level.' + lv)) + ' <span class="count">' + (p[lv] || []).length + '</span></button>';
+    }).join('') + '</div>';
+    h += '<div class="notice"><span class="ttl">' + esc(t('i.level.' + protoLevel)) + '</span>' + esc(t('i.level.' + protoLevel + '.desc')) + '</div>';
+    h += '<div class="small muted mb">' + esc(t('m.proto.fallback')) + '</div>';
+    var steps = p[protoLevel] || [];
+    if (!steps.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.proto.empty')) + '</div>';
+    steps.forEach(function (st, i) {
+      h += '<div class="step-edit" data-step="' + esc(st.id) + '"><div class="bar">' +
+        '<span class="n">' + (i + 1).toString().padStart(2, '0') + '</span>' +
+        '<span class="small">' + esc(t('m.proto.stepTitle')) + ': <b>' + esc(st.title.en || '—') + '</b></span><span class="sp"></span>' +
+        '<button class="btn sm ghost" data-act="proto-up" data-i="' + i + '">↑ ' + esc(t('a.up')) + '</button>' +
+        '<button class="btn sm ghost" data-act="proto-down" data-i="' + i + '">↓ ' + esc(t('a.down')) + '</button>' +
+        '<button class="btn sm ghost" data-act="proto-del" data-i="' + i + '">✕ ' + esc(t('a.remove')) + '</button></div>' +
+        '<div class="inner"><div class="small" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate);font-weight:700;margin-bottom:6px">' +
+        esc(t('m.proto.lang')) + '</div><div class="langtabs">' + V.LAN.map(function (lg) {
+          return '<button data-act="proto-lang" data-lg="' + lg + '" class="' + (protoLang === lg ? 'on' : '') + '">' + esc(lg.toUpperCase()) + '</button>';
+        }).join('') + '</div>' +
+        '<div class="row"><label>' + esc(t('m.proto.stepTitle')) + ' · ' + esc(protoLang.toUpperCase()) + '</label>' +
+        '<input data-pfield="' + esc(st.id) + '|' + protoLang + '|title" value="' + esc(st.title[protoLang] || '') + '"></div>' +
+        '<div class="row"><label>' + esc(t('m.proto.stepDetail')) + ' · ' + esc(protoLang.toUpperCase()) + '</label>' +
+        '<textarea data-pfield="' + esc(st.id) + '|' + protoLang + '|detail">' + esc(st.detail[protoLang] || '') + '</textarea></div>' +
+        '</div></div>';
+    });
+    h += '<div class="btn-row"><button class="btn secondary" data-act="proto-add">' + esc(t('m.proto.addStep')) + '</button>' +
+      '<button class="btn gold" data-act="proto-save">' + esc(t('a.save')) + '</button></div>';
+    h += '</div><div class="doc-foot"><span>' + esc(t('m.proto.saved')) + '</span><span class="docnum">PROTOCOL / ' + protoLevel + '</span></div></div>';
+    return h;
+  }
+
+  function paneInspections(s) {
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.securityShort')) + '</div><h2>' + esc(t('m.insp.title')) +
+      '</h2><div class="sub">' + esc(t('m.insp.sub')) + '</div></div></div><div class="doc-body">';
+    var awaiting = s.certificates.filter(function (c) { return c.status === 'AWAITING_GRADE'; });
+    if (awaiting.length) {
+      h += '<div class="notice warn"><span class="ttl">' + esc(t('m.insp.gradeAsk')) + '</span>' + esc(t('m.insp.gradeNote')) + '</div>';
+      awaiting.forEach(function (c) {
+        h += '<div class="stage-card" style="min-height:0;margin-bottom:12px"><div class="top"><span class="code">' + esc(c.code) +
+          '</span><span class="badge pending">' + esc(t('s.awaitingGrade')) + '</span></div>' +
+          '<div class="small mono">' + esc(c.ref) + ' · ' + esc(t('i.level.M')) + ' · ' + esc(fmt(c.issuedAt)) + '</div>' +
+          '<div class="grade-pick">' + ['EXCELLENT','PASS','FAIL'].map(function (g) {
+            return '<button class="btn sm ' + (g === 'EXCELLENT' ? 'gold' : 'secondary') + '" data-act="grade" data-code="' + esc(c.code) + '" data-g="' + g + '">' +
+              esc(t('o.grade.' + g.toLowerCase())) + '</button>';
+          }).join('') + '</div></div>';
+      });
+    }
+    var rows = s.inspections.slice().sort(function (a, b) { return b.at - a.at; });
+    if (!rows.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.insp.empty')) + '</div>';
+    else {
+      h += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+        ['m.insp.col.id','m.insp.col.level','m.insp.col.ref','m.insp.col.outcome','m.insp.col.grade','m.insp.col.at']
+          .map(function (k) { return '<th>' + esc(t(k)) + '</th>'; }).join('') + '</tr></thead><tbody>';
+      rows.forEach(function (x) {
+        var cert = s.certificates.find(function (c) { return c.code === x.certCode; });
+        var grade = cert ? cert.grade : null;
+        h += '<tr><td class="mono">' + esc(x.id) + '</td><td>' + esc(t('i.level.' + x.level)) + '</td><td class="mono">' + esc(x.ref) +
+          '</td><td>' + esc(outcomeLabel(x.outcome)) + '</td><td>' + gradeLabel(grade) + '</td><td class="mono">' + esc(fmt(x.at)) + '</td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    h += '</div><div class="doc-foot"><span>' + esc(t('i.auto')) + '</span><span class="docnum">' + rows.length + ' INSP</span></div></div>';
+    return h;
+  }
+  function outcomeLabel(o) {
+    return t(o === 'CLEARED' ? 's.cleared' : o === 'ABORTED' ? 's.aborted' : 's.awaitingGrade');
+  }
+  function gradeLabel(g) {
+    if (!g) return '<span class="badge neutral">' + esc(t('s.awaitingGrade')) + '</span>';
+    var cls = g === 'EXCELLENT' ? 'excellent' : g === 'PASS' ? 'ok' : 'bad';
+    return '<span class="badge ' + cls + '">' + esc(t('o.grade.' + g.toLowerCase())) + '</span>';
+  }
+
+  function paneCerts(s) {
+    var rows = s.certificates.slice().sort(function (a, b) { return b.issuedAt - a.issuedAt; });
+    var typeKey = { CLEARANCE:'p.certs.type.clearance', IDENTITY:'p.certs.type.identity', VISA:'p.certs.type.visa' };
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.official')) + '</div><h2>' + esc(t('m.certs.title')) +
+      '</h2><div class="sub">' + esc(t('m.certs.sub')) + '</div></div></div><div class="doc-body">';
+    if (!rows.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.certs.empty')) + '</div>';
+    else {
+      h += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+        ['m.certs.col.code','m.certs.col.type','m.certs.col.ref','m.certs.col.level','m.certs.col.grade','m.certs.col.at','m.app.col.act']
+          .map(function (k) { return '<th>' + esc(t(k)) + '</th>'; }).join('') + '</tr></thead><tbody>';
+      rows.forEach(function (c) {
+        h += '<tr><td class="mono">' + esc(c.code) + '</td><td>' + esc(t(typeKey[c.kind] || 'g.official')) +
+          '</td><td class="mono">' + esc(c.ref) + '</td><td>' + (c.level ? esc(t('i.level.' + c.level)) : '—') +
+          '</td><td>' + (c.status === 'AWAITING_GRADE' ? '<span class="badge pending">' + esc(t('s.awaitingGrade')) + '</span>' : gradeLabel(c.grade)) +
+          '</td><td class="mono">' + esc(fmt(c.issuedAt)) + '</td>' +
+          '<td class="act"><button class="btn sm secondary" data-act="cert-dl" data-code="' + esc(c.code) + '">' + esc(t('a.reissue')) + '</button></td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    h += '</div><div class="doc-foot"><span>' + esc(t('c.legalText')) + '</span><span class="docnum">' + rows.length + ' INSTR</span></div></div>';
+    return h;
+  }
+
+  function paneLeap(s) {
+    var rows = s.leaps.slice().sort(function (a, b) { return b.lodgedAt - a.lodgedAt; });
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('st.LEAP.name')) + '</div><h2>' + esc(t('m.leap.title')) +
+      '</h2><div class="sub">' + esc(t('m.leap.sub')) + '</div></div></div><div class="doc-body">';
+    if (!rows.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.common.none')) + '</div>';
+    else rows.forEach(function (x) {
+      h += '<div class="stage-card" style="min-height:0;margin-bottom:14px"><div class="top"><span class="code">' + esc(x.id) +
+        '</span>' + (x.status === 'LODGED' ? '<span class="badge pending">' + esc(t('s.pending')) + '</span>' :
+          x.status === 'APPROVED' ? '<span class="badge ok">' + esc(t('m.leap.granted')) + '</span>' :
+          '<span class="badge bad">' + esc(t('s.rejected')) + '</span>') + '</div>' +
+        '<div class="small mono">' + esc(x.ref) + ' · ' + esc(fmt(x.lodgedAt)) + ' · ' + esc(x.target || '—') + '</div>';
+      if (x.directedLevel) h += '<div class="notice info" style="margin:6px 0">' + esc(t('m.leap.direct')) + ': <b>' + esc(t('i.level.' + x.directedLevel)) + '</b></div>';
+      if (x.reason) h += '<div class="small" style="color:var(--red)">' + esc(t('a.reason')) + ': ' + esc(x.reason) + '</div>';
+      if (x.status === 'LODGED') {
+        h += '<div class="leap-levels"><span class="small strong" style="align-self:center">' + esc(t('m.leap.direct')) + ':</span>' +
+          ['R','Z','A','M'].map(function (lv) {
+            return '<button class="btn sm secondary" data-act="leap-direct" data-id="' + esc(x.id) + '" data-lv="' + lv + '">' + lv + ' · ' + esc(t('i.level.' + lv).split('·')[0]) + '</button>';
+          }).join('') + '</div>';
+        h += '<div class="decision-bar"><button class="btn sm" data-act="leap-decide" data-id="' + esc(x.id) + '" data-d="APPROVE">' + esc(t('a.approve')) + '</button>' +
+          '<button class="btn sm danger" data-act="leap-decide" data-id="' + esc(x.id) + '" data-d="REJECT">' + esc(t('a.reject')) + '</button>' +
+          '<input data-leap-reason="' + esc(x.id) + '" placeholder="' + esc(t('m.app.reasonPh')) + '" style="flex:1;min-width:180px;padding:6px 9px;border:1px solid var(--line-2)"></div>';
+      }
+      h += '</div>';
+    });
+    h += '</div><div class="doc-foot"><span>' + esc(t('p.leap.desc')) + '</span><span class="docnum">' + rows.length + ' EXC</span></div></div>';
+    return h;
+  }
+
+  function paneLedger(s) {
+    var rows = s.ledger.slice().reverse();
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.restricted')) + '</div><h2>' + esc(t('m.ledger.title')) +
+      '</h2><div class="sub">' + esc(t('m.ledger.sub')) + '</div></div></div><div class="doc-body">';
+    if (!rows.length) h += '<div class="empty"><span class="big">§</span>' + esc(t('m.common.none')) + '</div>';
+    else {
+      h += '<div class="ledger">' + rows.map(function (x) {
+        return '<div class="row"><span class="ts">' + esc(fmt(x.at)) + '</span><span class="tag">' + esc(x.actor) + '</span><span class="msg">' + esc(x.event) + '</span></div>';
+      }).join('') + '</div>';
+    }
+    h += '</div><div class="doc-foot"><span>' + esc(t('m.ledger.sub')) + '</span><span class="docnum">' + rows.length + ' ENTRIES</span></div></div>';
+    return h;
+  }
+
+  function paneSystem(s) {
+    var fp = '—';
+    try { fp = V.publicJwk.n.slice(0, 32).toUpperCase() + '…'; } catch (e) {}
+    var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.authority')) + '</div><h2>' + esc(t('m.sys.title')) +
+      '</h2><div class="sub">' + esc(t('m.sys.sub')) + '</div></div></div><div class="doc-body g2">';
+    h += '<div><div class="sysline"><span class="k">' + esc(t('m.sys.keyFp')) + '</span><span class="v">' + esc(fp) + '</span></div>' +
+      '<div class="sysline"><span class="k">' + esc(t('m.sys.cipher')) + '</span><span class="v">RSA-OAEP-2048/SHA-256 · AES-256-GCM · PBKDF2-SHA256/180000</span></div>' +
+      '<div class="sysline"><span class="k">' + esc(t('m.sys.port')) + '</span><span class="v">' + V.port + '</span></div>' +
+      '<div class="sysline"><span class="k">' + esc(t('g.version')) + '</span><span class="v">1.0 · sealed build</span></div>' +
+      '<div class="notice mt"><span class="ttl">' + esc(t('m.sys.exportNote')) + '</span>' + esc(t('x.sealed')) + '</div>' +
+      '<div class="btn-row"><button class="btn secondary" data-act="sys-export">' + esc(t('a.export')) + '</button>' +
+      '<button class="btn secondary" data-act="sys-import">' + esc(t('a.import')) + '</button>' +
+      '<button class="btn danger" data-act="sys-purge">' + esc(t('a.reset')) + '</button></div></div>';
+    h += '<div><div class="doc" style="margin:0"><div class="doc-head"><h3>' + esc(t('m.tab.overview')) + '</h3></div><div class="doc-body">' +
+      '<div class="kv"><div class="k">' + esc(t('m.ov.subjects')) + '</div><div class="v">' + Object.keys(s.subjects).length + '</div>' +
+      '<div class="k">' + esc(t('m.ov.petitions')) + '</div><div class="v">' + s.applications.length + '</div>' +
+      '<div class="k">' + esc(t('m.ov.instruments')) + '</div><div class="v">' + s.certificates.length + '</div>' +
+      '<div class="k">' + esc(t('m.ledger.event')) + '</div><div class="v">' + s.ledger.length + '</div>' +
+      '<div class="k">' + esc(t('g.secure')) + '</div><div class="v">' + esc(t('m.common.realtime')) + '</div></div>' +
+      '<div class="small muted mt">' + esc(t('m.ov.relayNote')) + '</div></div></div></div>';
+    h += '</div><div class="doc-foot"><span>' + esc(t('g.restricted')) + '</span><span class="docnum">MASTER / 1</span></div></div>';
+    return h;
+  }
+
+  /* ---------- credential issuance ---------- */
+  function issueCredential(s, ref, stage) {
+    var sub = s.subjects[ref];
+    if (!sub) {
+      sub = { ref: ref, createdAt: V.now(), identity: {}, credential: 'NONE', credentialCode: null,
+        credentials: [], nationalId: null, retained: false, notes: '' };
+      s.subjects[ref] = sub; s.counters.subject++;
+    }
+    var type = V.CREDENTIAL_FOR[stage];
+    var c = V.code(type === 'CITIZEN' ? 'VDL-NID' : 'VDL-' + type);
+    sub.credential = type; sub.credentialCode = c; sub.retained = true;
+    sub.credentials.push({ type: type, code: c, at: V.now() });
+    if (type === 'CITIZEN') sub.nationalId = c;
+    if (stage === 'C' || stage === 'D' || stage === 'TR' || stage === 'PR') {
+      s.certificates.push({
+        code: c, ref: ref, kind: 'VISA', level: null, grade: null,
+        issuedAt: V.now(), ts: V.tsRecord(V.now()), steps: V.instrumentSteps('VISA'),
+        subject: subjectSnapshot(sub), status: 'VALID', purpose: stage, origin: 'AUTHORITY'
+      });
+      s.counters.cert++;
+    }
+    V.Vault.ledger(s, 'AUTHORITY', 'p.approved.body');
+    return c;
+  }
+  function subjectSnapshot(sub) {
+    var i = sub.identity || {};
+    return {
+      name: i.name || [i.surname, i.given].filter(Boolean).join(' ') || '—',
+      dob: i.dob || '—', nationality: i.nationality || i.natCurrent || '—',
+      passportNo: i.passportNo || '—', address: i.address || '—',
+      credentialLabel: credentialLabel(sub.credential),
+      credentialCode: sub.credentialCode, nationalId: sub.nationalId
+    };
+  }
+  function credentialLabel(c) {
+    return t(c === 'NONE' ? 'cr.none' : c === 'CITIZEN' ? 'cr.CITIZEN' : 'cr.' + c);
+  }
+
+  /* ---------- adjudication ---------- */
+  function actionsFor(a) {
+    var f = V.FLOW[a.stage]; if (!f) return [];
+    return a.round === 2 ? (f.actions2 || []) : (f.actions1 || []);
+  }
+  var ACTION_KEY = { PREAPPROVE:'a.preapprove', APPROVE:'a.approve', REJECT:'a.reject', WAITLIST:'a.waitlist' };
+
+  async function openAdjudication(appId) {
+    var s = await V.Vault.state();
+    var a = s.applications.find(function (x) { return x.id === appId; });
+    if (!a) return;
+    var env = V.Vault.inbox().find(function (e) { return e.id === a.inboxId; });
+    var payload = null, decErr = '';
+    if (env) {
+      try { payload = await V.openForChancellery(env.payload); }
+      catch (e) { decErr = String(e && e.message || e); }
+    }
+    var html = '<div class="small mono mb">' + esc(t('m.app.sealedNote')) + ' · ' + esc(a.id) + '</div>';
+    html += '<div class="kv mb"><div class="k">' + esc(t('m.app.col.stage')) + '</div><div class="v">' + esc(t('st.' + a.stage + '.full')) + '</div>' +
+      '<div class="k">' + esc(t('m.app.col.round')) + '</div><div class="v">' + a.round + '</div>' +
+      '<div class="k">' + esc(t('g.subjectRef')) + '</div><div class="v mono">' + esc(a.ref) + '</div>' +
+      '<div class="k">' + esc(t('m.app.col.state')) + '</div><div class="v">' + esc(appStatus(a.status)) + '</div></div>';
+    if (decErr) html += '<div class="notice bad">' + esc(t('x.err')) + ' ' + esc(decErr) + '</div>';
+    if (payload && payload.form) {
+      var cells = Object.keys(payload.form).filter(function (k) { return k !== 'camera' && typeof payload.form[k] !== 'object'; });
+      function fieldLabel(k) {
+        var meta = V.FIELDS[k];
+        return meta && meta.lk ? t(meta.lk) : t('f.' + k);
+      }
+      function fieldValue(v) {
+        if (v === true) return t('a.yes');
+        if (v === false) return t('a.no');
+        if (typeof v === 'string' && /^o\./.test(v)) return t(v);
+        return v || '—';
+      }
+      html += '<h4 style="margin:14px 0 8px;font-size:13px">' + esc(t('m.app.detail')) + '</h4><div class="app-detail"><div class="kv">' +
+        cells.map(function (k) {
+          return '<div class="k">' + esc(fieldLabel(k)) + '</div><div class="v">' + esc(fieldValue(payload.form[k])) + '</div>';
+        }).join('') + '</div></div>';
+    }
+    if (payload && payload.biometrics && payload.biometrics.frames && payload.biometrics.frames.length) {
+      html += '<h4 style="margin:14px 0 6px;font-size:13px">' + esc(t('m.app.biometrics')) + '</h4><div class="bio-strip">' +
+        payload.biometrics.frames.map(function (f) { return '<img src="' + esc(f.data) + '" alt="live frame">'; }).join('') + '</div>' +
+        '<div class="small mono muted mt">' + esc(payload.biometrics.attestation || '') + '</div>';
+    }
+    if (a.certRefs && a.certRefs.length) html += '<div class="small mt"><b>' + esc(t('m.app.certRefs')) + ':</b> ' + a.certRefs.map(esc).join(' · ') + '</div>';
+
+    /* Full history for this subject */
+    var hist = s.applications.filter(function (x) { return x.ref === a.ref; }).sort(function (x, y) { return x.lodgedAt - y.lodgedAt; });
+    html += '<h4 style="margin:16px 0 8px;font-size:13px">' + esc(t('m.app.history')) + '</h4>' +
+      '<div class="tbl-wrap"><table class="tbl compact"><thead><tr><th>' + esc(t('m.app.col.id')) + '</th><th>' + esc(t('m.app.col.stage')) +
+      '</th><th>' + esc(t('m.app.col.round')) + '</th><th>' + esc(t('m.app.col.state')) + '</th><th>' + esc(t('m.app.col.lodged')) + '</th></tr></thead><tbody>' +
+      hist.map(function (x) {
+        return '<tr><td class="mono">' + esc(x.id) + '</td><td>' + esc(t('st.' + x.stage + '.name')) + '</td><td>' + x.round +
+          '</td><td>' + esc(appStatus(x.status)) + '</td><td class="mono">' + esc(fmt(x.lodgedAt)) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    var insp = s.inspections.filter(function (x) { return x.ref === a.ref; });
+    if (insp.length) html += '<div class="small mt"><b>' + esc(t('m.ov.inspections')) + ':</b> ' +
+      insp.map(function (x) { return esc(t('i.level.' + x.level) + ' → ' + outcomeLabel(x.outcome)); }).join(' · ') + '</div>';
+
+    if (a.status === 'LODGED') {
+      html += '<div class="reason-box"><label>' + esc(t('a.reason')) + ' · ' + esc(t('m.app.reasonReq')) + '</label>' +
+        '<textarea data-reason="' + esc(a.id) + '" placeholder="' + esc(t('m.app.reasonPh')) + '"></textarea></div>' +
+        '<div class="small strong" style="margin-top:12px">' + esc(t('m.app.actionsFor')) + '</div>' +
+        '<div class="decision-bar">' + actionsFor(a).map(function (ac) {
+          return '<button class="btn ' + (ac === 'REJECT' ? 'danger' : ac === 'APPROVE' ? '' : 'gold') +
+            '" data-act="decide" data-id="' + esc(a.id) + '" data-d="' + ac + '">' + esc(t(ACTION_KEY[ac])) + '</button>';
+        }).join('') + '</div>';
+    }
+    V.modal(t('m.app.detail'), html, [{ label: t('a.close'), cls: 'secondary' }]);
+  }
+
+  async function decide(appId, action) {
+    var reasonEl = document.querySelector('[data-reason="' + appId + '"]');
+    var reason = reasonEl ? String(reasonEl.value || '').trim() : '';
+    if (action === 'REJECT' && !reason) { V.toast(t('m.app.reasonReq'), 'bad'); return; }
+    var s = await V.Vault.mutate(function (s) {
+      var a = s.applications.find(function (x) { return x.id === appId; });
+      if (!a || a.status !== 'LODGED') return false;
+      /* Statuses are adjectives, not action verbs: the route state machine
+         in core.js tests for 'APPROVED' when opening the oath ceremony. */
+      a.status = action === 'PREAPPROVE' ? 'PREAPPROVED'
+               : action === 'WAITLIST'   ? 'WAITLISTED'
+               : action === 'APPROVE'    ? 'APPROVED' : action;
+      a.reason = reason || null; a.decidedAt = V.now();
+      s.decisions.push({ id: V.uid('DEC'), appId: a.id, ref: a.ref, action: action, reason: reason, at: V.now() });
+      var sub = s.subjects[a.ref];
+      var snap = sub ? subjectSnapshot(sub) : {};
+
+      if (action === 'APPROVE') {
+        if (a.stage === 'NAT') {
+          /* Approval of the final naturalisation petition summons the oath. */
+          s.oaths.push({ id: V.uid('OATH'), ref: a.ref, at: V.now(), status: 'SUMMONED', confirmedAt: null });
+          V.Vault.notice(s, a.ref, 'OATH_SUMMONED', {});
+          V.Vault.ledger(s, 'AUTHORITY', 's.awaitingOath');
+        } else {
+          var c = issueCredential(s, a.ref, a.stage);
+          V.Vault.notice(s, a.ref, 'APPROVED', { stage: a.stage, code: c });
+          V.Vault.ledger(s, 'AUTHORITY', 'p.approved.title');
+        }
+      } else if (action === 'PREAPPROVE') {
+        var lv = V.INSPECTION_FOR[a.stage];
+        V.Vault.addPending(s, a.ref, lv, a.stage);
+        V.Vault.notice(s, a.ref, 'PREAPPROVED', { stage: a.stage, level: lv });
+        V.Vault.ledger(s, 'AUTHORITY', 'p.preact.title');
+      } else if (action === 'WAITLIST') {
+        V.Vault.addPending(s, a.ref, 'M', 'NAT');
+        V.Vault.notice(s, a.ref, 'WAITLISTED', {});
+        V.Vault.ledger(s, 'AUTHORITY', 'p.waitlist.title');
+      } else {
+        V.Vault.notice(s, a.ref, 'REJECTED', { stage: a.stage, reason: reason });
+        V.Vault.ledger(s, 'AUTHORITY', 'p.reject.title');
+      }
+    });
+    V.closeModal();
+    V.toast(t('m.app.decisionRecorded'), 'good');
+    render();
+    /* Oath summons need no further action here; the portal performs the ceremony. */
+  }
+
+  /* ---------- grading / oath confirmation ---------- */
+  async function gradeM(code, g) {
+    await V.Vault.mutate(function (s) {
+      var c = s.certificates.find(function (x) { return x.code === code; });
+      if (!c || c.status !== 'AWAITING_GRADE') return false;
+      c.grade = g; c.status = 'VALID';
+      s.inspections.forEach(function (i) { if (i.certCode === code) i.grade = g; });
+      V.Vault.notice(s, c.ref, 'M_GRADED', { code: code, grade: g });
+      V.Vault.ledger(s, 'AUTHORITY', g === 'EXCELLENT' ? 'o.grade.excellent' : g === 'PASS' ? 'o.grade.pass' : 'o.grade.fail');
+    });
+    V.toast(t('m.insp.graded'), 'good'); render();
+  }
+  async function confirmOath(ref) {
+    await V.Vault.mutate(function (s) {
+      var o = s.oaths.filter(function (x) { return x.ref === ref; }).pop();
+      if (!o || o.status === 'CONFIRMED') return false;
+      o.status = 'CONFIRMED'; o.confirmedAt = V.now();
+      var c = issueCredential(s, ref, 'NAT');
+      V.Vault.notice(s, ref, 'CITIZEN_CONFIRMED', { code: c });
+      V.Vault.ledger(s, 'AUTHORITY', 'p.citizen.title');
+    });
+    V.toast(t('p.citizen.title'), 'good'); render();
+  }
+
+  /* ---------- subject CRUD ---------- */
+  function subjectForm(sub) {
+    sub = sub || { identity: {}, credential: 'NONE' };
+    var i = sub.identity || {};
+    var f = [
+      ['surname','text',i.surname],['given','text',i.given],['dob','date',i.dob],
+      ['natCurrent','text',i.natCurrent || i.nationality],['passportNo','text',i.passportNo],
+      ['email','text',i.email],['phone','text',i.phone],['address','text',i.address]
+    ];
+    var h = '<div class="fields">' + f.map(function (x) {
+      return '<div class="field"><label>' + esc(t('f.' + x[0])) +
+        '</label><input data-sf="' + x[0] + '" type="' + x[1] + '" value="' + esc(x[2] || '') + '"></div>';
+    }).join('') + '</div>';
+    h += '<div class="fields mt"><div class="field"><label>' + esc(t('m.sub.col.status')) + '</label><select data-sf="credential">' +
+      ['NONE','C','D','TR','PR','CITIZEN'].map(function (c) {
+        return '<option value="' + c + '"' + (sub.credential === c ? ' selected' : '') + '>' + esc(t(c === 'NONE' ? 'cr.none' : c === 'CITIZEN' ? 'cr.CITIZEN' : 'cr.' + c)) + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="field"><label>' + esc(t('cr.code')) + '</label><input data-sf="credentialCode" value="' + esc(sub.credentialCode || '') + '"></div>' +
+      '<div class="field"><label>' + esc(t('g.nationalId')) + '</label><input data-sf="nationalId" value="' + esc(sub.nationalId || '') + '"></div></div>' +
+      '<div class="field mt"><label>' + esc(t('m.sub.col.ref')) + '</label><input data-sf="ref" value="' + esc(sub.ref || '') + '" ' + (sub.ref ? 'readonly' : '') + '></div>';
+    return h;
+  }
+  function openSubject(sub) {
+    V.modal(sub ? t('m.sub.edit') : t('m.sub.create'), subjectForm(sub), [
+      { label: t('a.cancel'), cls: 'secondary' },
+      { label: t('a.save'), cls: 'gold', onClick: function () { saveSubject(sub ? sub.ref : null); } }
+    ]);
+  }
+  async function saveSubject(ref) {
+    var vals = {};
+    document.querySelectorAll('[data-sf]').forEach(function (el) { vals[el.getAttribute('data-sf')] = el.value; });
+    await V.Vault.mutate(function (s) {
+      var key = ref || vals.ref || V.code('VDL-SUB');
+      var sub = s.subjects[key];
+      if (!sub) {
+        sub = { ref: key, createdAt: V.now(), identity: {}, credential: 'NONE',
+          credentialCode: null, credentials: [], nationalId: null, retained: true, notes: '' };
+        s.subjects[key] = sub; s.counters.subject++;
+      }
+      ['surname','given','dob','natCurrent','passportNo','email','phone','address','nationality'].forEach(function (k) {
+        if (vals[k] !== undefined) sub.identity[k] = vals[k];
+      });
+      sub.identity.name = [sub.identity.surname, sub.identity.given].filter(Boolean).join(' ') || sub.identity.name;
+      sub.credential = vals.credential || sub.credential;
+      sub.credentialCode = vals.credentialCode || sub.credentialCode;
+      sub.nationalId = vals.nationalId || sub.nationalId;
+      V.Vault.ledger(s, 'AUTHORITY', ref ? 'm.sub.edit' : 'm.sub.create');
+    });
+    V.toast(t('x.saved'), 'good'); render();
+  }
+
+  /* ---------- event delegation ---------- */
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-tab],[data-act]');
+    if (!el) return;
+    if (el.dataset.tab) { active = el.dataset.tab; render(); return; }
+    var act = el.dataset.act, id = el.dataset.id;
+    switch (act) {
+      case 'adj': openAdjudication(id); break;
+      case 'decide': decide(id, el.dataset.d); break;
+      case 'grade': gradeM(el.dataset.code, el.dataset.g); break;
+      case 'cert-dl': {
+        V.Vault.state().then(function (s) {
+          var c = s.certificates.find(function (x) { return x.code === el.dataset.code; });
+          if (c) V.downloadCertificate(V.certSpecFromRecord(c)).then(function () { V.toast(t('i.certReady'), 'good'); });
+        });
+        break;
+      }
+      case 'sub-create': openSubject(null); break;
+      case 'sub-edit': V.Vault.state().then(function (s) { openSubject(s.subjects[id]); }); break;
+      case 'sub-del': V.confirmDialog(t('a.delete'), esc(t('m.sub.deleteAsk')), async function () {
+        await V.Vault.mutate(function (s) {
+          delete s.subjects[id];
+          s.applications = s.applications.filter(function (a) { return a.ref !== id; });
+          s.leaps = s.leaps.filter(function (a) { return a.ref !== id; });
+          s.inspections = s.inspections.filter(function (a) { return a.ref !== id; });
+          s.certificates = s.certificates.filter(function (a) { return a.ref !== id; });
+          delete s.notices[id]; delete s.pending[id];
+          V.Vault.ledger(s, 'AUTHORITY', 'm.sub.deleteAsk');
+        });
+        render();
+      }); break;
+      case 'proto-level': protoLevel = el.dataset.lv; render(); break;
+      case 'proto-lang': protoLang = el.dataset.lg; render(); break;
+      case 'proto-add': {
+        var p = getProto(lastState);
+        p[protoLevel].push({ id: V.uid('STP'), title: {}, detail: {} });
+        render(); break;
+      }
+      case 'proto-del': { getProto(lastState)[protoLevel].splice(+el.dataset.i, 1); render(); break; }
+      case 'proto-up': case 'proto-down': {
+        var arr = getProto(lastState)[protoLevel], i = +el.dataset.i, j = act === 'proto-up' ? i - 1 : i + 1;
+        if (j >= 0 && j < arr.length) { var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; }
+        render(); break;
+      }
+      case 'proto-save': {
+        var snapshot = JSON.parse(JSON.stringify(getProto(lastState)));
+        V.Vault.mutate(function (s) {
+          ['R','Z','A','M'].forEach(function (lv) { s.protocol[lv] = snapshot[lv]; });
+          V.Vault.ledger(s, 'AUTHORITY', 'm.proto.saved');
+        }).then(function () { V.toast(t('m.proto.saved'), 'good'); render(); });
+        break;
+      }
+      case 'leap-direct': {
+        var lv2 = el.dataset.lv;
+        V.Vault.mutate(function (s) {
+          var lp = s.leaps.find(function (x) { return x.id === id; });
+          if (!lp || lp.status !== 'LODGED') return false;
+          lp.directedLevel = lv2; lp.directedAt = V.now();
+          V.Vault.addPending(s, lp.ref, lv2, 'LEAP');
+          V.Vault.notice(s, lp.ref, 'LEAP_INSPECTION', { level: lv2, id: lp.id });
+          V.Vault.ledger(s, 'AUTHORITY', 'm.leap.directed');
+        }).then(function () { V.toast(t('m.leap.directed'), 'good'); render(); });
+        break;
+      }
+      case 'leap-decide': {
+        var d = el.dataset.d;
+        var ri = document.querySelector('[data-leap-reason="' + id + '"]');
+        var rr = ri ? String(ri.value || '').trim() : '';
+        if (d === 'REJECT' && !rr) { V.toast(t('m.app.reasonReq'), 'bad'); return; }
+        V.Vault.mutate(function (s) {
+          var lp = s.leaps.find(function (x) { return x.id === id; });
+          if (!lp || lp.status !== 'LODGED') return false;
+          lp.status = d === 'APPROVE' ? 'APPROVED' : d;
+          lp.reason = rr || null; lp.decidedAt = V.now();
+          V.Vault.clearPending(s, lp.ref, lp.directedLevel, 'LEAP');
+          V.Vault.notice(s, lp.ref, 'LEAP_DECISION', { action: d, reason: rr });
+          V.Vault.ledger(s, 'AUTHORITY', d === 'APPROVE' ? 'm.leap.granted' : 'p.reject.title');
+        }).then(function () { V.toast(t('m.app.decisionRecorded'), 'good'); render(); });
+        break;
+      }
+      case 'oath-confirm': confirmOath(id); break;
+      case 'sys-export': {
+        V.Vault.export().then(function (txt) {
+          var blob = new Blob([txt], { type: 'application/json' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'VDL-SEALED-REGISTER-' + V.now() + '.json';
+          document.body.appendChild(a); a.click();
+          setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1200);
+        });
+        break;
+      }
+      case 'sys-import': {
+        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+        inp.onchange = function () {
+          var f = inp.files[0]; if (!f) return;
+          var r = new FileReader();
+          r.onload = function () {
+            V.Vault.import(String(r.result)).then(function () { V.toast(t('x.saved'), 'good'); protoDraft = null; render(); })
+              .catch(function (err) { V.toast(t('x.err') + ' ' + err.message, 'bad'); });
+          };
+          r.readAsText(f);
+        };
+        inp.click(); break;
+      }
+      case 'sys-purge': V.confirmDialog(t('a.reset'), esc(t('m.sys.purgeAsk')), function () {
+        V.Vault.reset(); protoDraft = null; V.toast(t('m.sys.purged'), 'good'); render();
+      }); break;
+    }
+  });
+
+  /* Protocol editor: keep the in-memory draft current without re-rendering. */
+  document.addEventListener('input', function (e) {
+    var k = e.target.dataset && e.target.dataset.pfield;
+    if (!k || !protoDraft) return;
+    var parts = k.split('|');
+    var st = protoDraft[protoLevel].find(function (x) { return x.id === parts[0]; });
+    if (st) st[parts[2]][parts[1]] = e.target.value;
+  });
+
+  /* Oath confirmation appears in the Inspections pane when a summons is taken. */
+  var _origPaneInspections = paneInspections;
+  paneInspections = function (s) {
+    var h = _origPaneInspections(s);
+    var pendingOaths = s.oaths.filter(function (o) { return o.status === 'TAKEN'; });
+    if (pendingOaths.length) {
+      var extra = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('p.oath.title')) +
+        '</div><h3>' + esc(t('p.oath.title')) + '</h3></div></div><div class="doc-body">';
+      pendingOaths.forEach(function (o) {
+        extra += '<div class="stage-card" style="min-height:0;margin-bottom:10px"><div class="top"><span class="code mono">' +
+          esc(o.ref) + '</span><span class="badge pending">' + esc(t('s.oathDone')) + '</span></div>' +
+          '<div class="small">' + esc(t('p.oath.pending')) + '</div>' +
+          '<div class="btn-row"><button class="btn sm gold" data-act="oath-confirm" data-id="' + esc(o.ref) + '">' + esc(t('a.confirmOath')) + '</button></div></div>';
+      });
+      extra += '</div></div>';
+      return extra + h;
+    }
+    return h;
+  };
+
+  render();
+})();
+</script>
+</body>
+</html>

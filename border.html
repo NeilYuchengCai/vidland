@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grand Duchy of Vidland · Frontier Inspection Authority</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="vidland.css">
+<script src="vidland-store.js"></script>
+<script src="vidland-i18n.js"></script>
+<script src="vidland-core.js"></script>
+<style>
+  .level-note{display:grid;grid-template-columns:130px 1fr;gap:0;border:1px solid var(--line);margin-top:14px}
+  @media(max-width:620px){.level-note{grid-template-columns:1fr}}
+  .level-note .k{background:var(--navy);color:#f0e8d5;padding:12px 14px;font-family:var(--serif);font-size:15px}
+  .level-note .v{background:var(--paper);padding:12px 16px;font-size:12.5px;line-height:1.75;color:var(--slate)}
+</style>
+</head>
+<body>
+<div id="masthead"></div>
+<div id="subbar"></div>
+<div class="wrap">
+  <div class="hero">
+    <div class="eyebrow" id="h-eyebrow"></div>
+    <h1 id="h-title"></h1>
+    <div class="lead" id="h-lead"></div>
+    <div class="small" style="margin-top:12px;color:var(--gold);font-weight:600">◈ <span id="h-secure"></span></div>
+    <div class="watermark">VIDLAND</div>
+  </div>
+
+  <div class="doc">
+    <div class="doc-head"><div><div class="kicker" id="lv-kicker"></div><h2 id="lv-title"></h2></div>
+      <span class="badge info" id="lv-badge"></span></div>
+    <div class="doc-body">
+      <div class="level-note"><div class="k" id="lv-code"></div><div class="v" id="lv-desc"></div></div>
+    </div>
+    <div class="doc-foot"><span id="lv-foot"></span><span class="docnum">R / 1</span></div>
+  </div>
+
+  <div id="runner"></div>
+
+  <div class="doc">
+    <div class="doc-head"><div><div class="kicker" id="ch-kicker"></div><h3 id="ch-title"></h3></div></div>
+    <div class="doc-body"><div class="small" id="ch-body"></div></div>
+    <div class="doc-foot"><span id="ch-foot"></span><span class="docnum" id="ch-num"></span></div>
+  </div>
+</div>
+<div id="footer"></div>
+
+<script>
+(function () {
+  'use strict';
+  var V = window.Vidland, t = V.t, esc = V.esc;
+
+  function paintStatic() {
+    document.getElementById('h-eyebrow').textContent = t('g.stateShort') + ' · ' + t('g.official');
+    document.getElementById('h-title').textContent = t('g.border');
+    document.getElementById('h-lead').textContent = t('i.verify.sub');
+    document.getElementById('h-secure').textContent = t('g.secure');
+    document.getElementById('lv-kicker').textContent = t('g.securityShort');
+    document.getElementById('lv-title').textContent = t('i.level.R');
+    document.getElementById('lv-badge').textContent = t('g.restricted');
+    document.getElementById('lv-code').textContent = 'LEVEL R';
+    document.getElementById('lv-desc').textContent = t('i.level.R.desc');
+    document.getElementById('lv-foot').textContent = t('g.secure');
+    document.getElementById('ch-kicker').textContent = t('g.chancelleryShort');
+    document.getElementById('ch-title').textContent = t('g.secure');
+    document.getElementById('ch-body').textContent = t('p.status.hint');
+    document.getElementById('ch-foot').textContent = t('x.sealed');
+    document.getElementById('ch-num').textContent = t('x.port');
+  }
+
+  V.init('border', paintStatic);
+  paintStatic();
+  V.mountInspectionRunner(document.getElementById('runner'),
+    { page: 'BORDER', levels: ['R'], verifyTitleKey: 'i.verify.title' });
+})();
+</script>
+</body>
+</html>

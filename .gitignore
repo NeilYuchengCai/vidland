@@ -1,0 +1,13 @@
+# 运行时产生的本地存档（非源码）
+vidland-data/
+
+# 工具/会话数据
+.workbuddy/
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+Thumbs.db
