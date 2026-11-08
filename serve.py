@@ -13,23 +13,33 @@ are shared between them. Opening the files via file:// is not supported.
 LAN mode (VDL_LAN=1) enables TLS and binds 0.0.0.0 so phones/tablets on
 the same network can reach the terminals. Web Crypto requires a secure
 context, which a plain http:// LAN IP is not, so TLS is mandatory there.
-Run make_cert.py first to create a local CA and a server certificate.
 
     VDL_LAN=1 python serve.py
     VDL_LAN=1 VDL_ADMIN_LAN=1 python serve.py   # also expose admin (unsafe)
 
+When using the default self-generated certificate, the host renews it
+automatically at startup and every 6 hours (before expiry or when the LAN
+IP changes), then hot-reloads the TLS context without restarting. The root
+CA is reused, so phones never need to reinstall anything. Supplying your
+own VDL_CERT / VDL_KEY disables this entirely.
+
+    VDL_CERT_CHECK_SEC=3600 VDL_LAN=1 python serve.py
+
 Certificates and the encrypted register live under vidland-data/, which is
 git-ignored, so no private key ever enters the repository.
 """
+import datetime
 import http.server
 import ipaddress
 import json
 import os
 import socket
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -46,9 +56,16 @@ ADMIN_LAN = os.environ.get("VDL_ADMIN_LAN", "").strip().lower() in ("1", "true",
 # four terminals. {rev, data{key: value-string}}.
 STORE_DIR = os.path.join(ROOT, "vidland-data")
 STORE_FILE = os.path.join(STORE_DIR, "store.json")
-CERT_FILE = os.environ.get("VDL_CERT", os.path.join(STORE_DIR, "lan-cert.pem"))
-KEY_FILE = os.environ.get("VDL_KEY", os.path.join(STORE_DIR, "lan-key.pem"))
+DEFAULT_CERT = os.path.join(STORE_DIR, "lan-cert.pem")
+DEFAULT_KEY = os.path.join(STORE_DIR, "lan-key.pem")
+CERT_FILE = os.environ.get("VDL_CERT", DEFAULT_CERT)
+KEY_FILE = os.environ.get("VDL_KEY", DEFAULT_KEY)
 CA_FILE = os.environ.get("VDL_CA", os.path.join(STORE_DIR, "ca.pem"))
+# Only auto-manage the certificates we generated ourselves. If the operator
+# supplies their own (Let's Encrypt, corporate CA), never touch or overwrite.
+MANAGE_CERT = (TLS and CERT_FILE == DEFAULT_CERT and KEY_FILE == DEFAULT_KEY)
+CERT_CHECK_SEC = int(os.environ.get("VDL_CERT_CHECK_SEC", "21600"))  # 6h
+RENEW_BELOW_DAYS = 30
 _store_lock = threading.Lock()
 
 # Static files the four terminals actually reference. Everything else under
@@ -85,6 +102,93 @@ def is_local_peer(addr):
     except ValueError:
         pass
     return addr in local_addresses()
+
+
+def lan_ipv4s():
+    """Non-loopback IPv4 addresses only; IPv6 (::1) is not a cert SAN IP."""
+    out = set()
+    for a in local_addresses():
+        try:
+            ip = ipaddress.ip_address(a)
+            if ip.version == 4 and not ip.is_loopback:
+                out.add(a)
+        except ValueError:
+            pass
+    return out
+
+
+# ---- self-managed certificate lifecycle ---------------------------------
+def cert_days_left(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        d = ssl._ssl._test_decode_cert(path)
+        end = datetime.datetime.strptime(d["notAfter"], "%b %d %H:%M:%S %Y %Z")
+        return (end - datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)).days
+    except Exception:
+        return None
+
+
+def cert_san_ips(path):
+    try:
+        d = ssl._ssl._test_decode_cert(path)
+        return {v for kind, v in d.get("subjectAltName", ()) if kind == "IP Address"}
+    except Exception:
+        return set()
+
+
+def cert_needs_renew():
+    if not (os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)):
+        return True, "证书缺失"
+    left = cert_days_left(CERT_FILE)
+    if left is None:
+        return True, "证书无法解析"
+    if left < RENEW_BELOW_DAYS:
+        return True, "剩余 %d 天" % left
+    missing = lan_ipv4s() - cert_san_ips(CERT_FILE)
+    if missing:
+        return True, "新 IP %s" % ", ".join(sorted(missing))
+    return False, "剩余 %d 天" % left
+
+
+def ensure_cert(reason="启动检查"):
+    """Idempotent: make_cert.py only rewrites when renewal is actually due."""
+    need, detail = cert_needs_renew()
+    if not need:
+        return False, detail
+    script = os.path.join(ROOT, "make_cert.py")
+    if not os.path.isfile(script):
+        return False, "make_cert.py 缺失"
+    try:
+        r = subprocess.run([sys.executable, script, "--quiet"], cwd=ROOT,
+                           capture_output=True, text=True, timeout=60,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            return False, "续签失败: %s" % (r.stderr or "").strip()[:120]
+        ok = os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)
+        return ok, ("%s → 已自动续签（%s，CA 未变，手机无需操作）" % (reason, detail)
+                    if ok else "续签后证书仍缺失")
+    except Exception as exc:
+        return False, "续签异常: %s" % exc
+
+
+def cert_watchdog(ctx):
+    """Re-check periodically and hot-reload the TLS context in place so a
+    long-running host never needs a manual restart to pick up a new cert."""
+    while True:
+        time.sleep(CERT_CHECK_SEC)
+        try:
+            need, _ = cert_needs_renew()
+            if not need:
+                continue
+            changed, msg = ensure_cert("定时检查")
+            if not changed:
+                print("  [cert] %s" % msg, flush=True)
+                continue
+            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            print("  [cert] 已热重载 TLS 证书（%s），服务未中断。" % msg, flush=True)
+        except Exception as exc:
+            print("  [cert] 检查失败（下次重试）: %s" % exc, flush=True)
 
 
 def _read_store():
@@ -267,12 +371,22 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 def main():
+    tls_ctx = None
     if TLS:
+        if MANAGE_CERT:
+            changed, msg = ensure_cert("启动检查")
+            print("  [cert] %s" % msg, flush=True)
         for f in (CERT_FILE, KEY_FILE):
             if not os.path.isfile(f):
                 print("TLS enabled but certificate file missing: %s" % f)
                 print("Set VDL_CERT / VDL_KEY, or unset VDL_TLS to serve plain HTTP.")
                 sys.exit(1)
+        tls_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            tls_ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+        except (OSError, ssl.SSLError) as exc:
+            print("Certificate load failed: %s" % exc)
+            sys.exit(1)
     scheme = "https" if TLS else "http"
     lan_ips = []
     if LAN:
@@ -282,7 +396,7 @@ def main():
             lan_ips = [s.getsockname()[0]]
             s.close()
         except Exception:
-            lan_ips = [a for a in sorted(local_addresses()) if not a.startswith("127.")]
+            lan_ips = sorted(lan_ipv4s())
     shown_host = lan_ips[0] if lan_ips else ("127.0.0.1" if HOST in ("0.0.0.0", "", "::") else HOST)
     base = "%s://%s:%d" % (scheme, shown_host, PORT)
     try:
@@ -292,19 +406,21 @@ def main():
         print("Set another non-default port: VDL_PORT=NNNN python serve.py")
         sys.exit(1)
     if TLS:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        try:
-            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
-        except (OSError, ssl.SSLError) as exc:
-            print("Certificate load failed: %s" % exc)
-            httpd.server_close()
-            sys.exit(1)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        httpd.socket = tls_ctx.wrap_socket(httpd.socket, server_side=True)
+        if MANAGE_CERT and CERT_CHECK_SEC > 0:
+            threading.Thread(target=cert_watchdog, args=(tls_ctx,),
+                             daemon=True, name="vdl-cert-watchdog").start()
     print("=" * 66)
     print("  GRAND DUCHY OF VIDLAND · Chancellery sealed-channel host")
     print("  Origin: %s   (all four terminals share this origin)" % base)
     print("  Transport: %s   Bound: %s:%d" %
           ("HTTPS / TLS" if TLS else "plain HTTP (loopback only)", HOST, PORT))
+    if MANAGE_CERT:
+        _, detail = cert_needs_renew()
+        print("  Cert: 自动续签已开启 · 每 %d 秒检查 · %s · CA 复用（手机免操作）"
+              % (CERT_CHECK_SEC, detail))
+    elif TLS:
+        print("  Cert: 使用外部证书，自动续签已跳过（VDL_CERT / VDL_KEY）")
     print("-" * 66)
     for name, path in PAGES:
         blocked = (path == "/admin.html" and LAN and not ADMIN_LAN)
