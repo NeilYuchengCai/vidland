@@ -37,6 +37,7 @@ CA_KEY = OUT / "ca-key.pem"
 CA_CERT = OUT / "ca.pem"
 SRV_KEY = OUT / "lan-key.pem"
 SRV_CERT = OUT / "lan-cert.pem"
+SRV_FULLCHAIN = OUT / "lan-fullchain.pem"
 CSR = OUT / "_server.csr"
 EXT = OUT / "_server.ext"
 MOBILECONFIG = OUT / "vidland-ca.mobileconfig"
@@ -249,7 +250,11 @@ def issue_server_cert():
                 p.unlink()
             except OSError:
                 pass
+    # iOS refuses a leaf-only chain even when the root CA is installed, so
+    # serve leaf + CA together. Order matters: leaf first, then its issuer.
+    SRV_FULLCHAIN.write_bytes(SRV_CERT.read_bytes() + CA_CERT.read_bytes())
     say("  服务器证书已签发（复用现有 CA，手机无需操作）")
+    say("  完整链: %s（叶子 + CA，供 TLS 服务端加载）" % SRV_FULLCHAIN.name)
     say("  有效期 %d 天 · SAN: %s" % (DAYS_SRV, ", ".join(san)))
     return True
 

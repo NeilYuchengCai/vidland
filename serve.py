@@ -66,9 +66,15 @@ DEFAULT_KEY = os.path.join(STORE_DIR, "lan-key.pem")
 CERT_FILE = os.environ.get("VDL_CERT", DEFAULT_CERT)
 KEY_FILE = os.environ.get("VDL_KEY", DEFAULT_KEY)
 CA_FILE = os.environ.get("VDL_CA", os.path.join(STORE_DIR, "ca.pem"))
+FULLCHAIN_FILE = os.path.join(STORE_DIR, "lan-fullchain.pem")
 # Only auto-manage the certificates we generated ourselves. If the operator
 # supplies their own (Let's Encrypt, corporate CA), never touch or overwrite.
 MANAGE_CERT = (TLS and CERT_FILE == DEFAULT_CERT and KEY_FILE == DEFAULT_KEY)
+# iOS rejects a leaf-only chain even with the root CA installed. Use the
+# bundled leaf+CA chain when we manage the certs; external certs are already
+# expected to be a full chain supplied by the operator.
+TLS_CHAIN_FILE = (FULLCHAIN_FILE if MANAGE_CERT and os.path.isfile(FULLCHAIN_FILE)
+                  else CERT_FILE)
 CERT_CHECK_SEC = int(os.environ.get("VDL_CERT_CHECK_SEC", "21600"))  # 6h
 RENEW_BELOW_DAYS = 30
 _store_lock = threading.Lock()
@@ -199,7 +205,8 @@ def cert_watchdog(ctx):
             if not changed:
                 print("  [cert] %s" % msg, flush=True)
                 continue
-            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            chain = FULLCHAIN_FILE if os.path.isfile(FULLCHAIN_FILE) else CERT_FILE
+            ctx.load_cert_chain(chain, KEY_FILE)
             print("  [cert] 已热重载 TLS 证书（%s），服务未中断。" % msg, flush=True)
         except Exception as exc:
             print("  [cert] 检查失败（下次重试）: %s" % exc, flush=True)
@@ -461,14 +468,20 @@ border-radius:10px;font-size:14px}ol{padding-left:22px}li{margin:10px 0}</style>
 <div class="note"><b>iOS 必做：</b>下载后到「设置 → 通用 → VPN 与设备管理」安装描述文件，
 再到「设置 → 通用 → 关于本机 → 证书信任设置」开启对该根证书的完全信任。
 漏掉最后一步 Safari 仍会报警告。</div>
-<h1>装好之后访问</h1>
-<p>请在 Safari 地址栏<b>手动完整输入</b>（必须带 <code>https://</code>）：</p>
+<h1>装好之后访问（注意端口变了）</h1>
+<div class="note"><b>证书下发页是 %d 端口、且只能用 http://。<br>
+终端是 %d 端口、必须用 https://。<br>
+不要把本页地址直接改成 https —— 那样会报「不支持通过 HTTPS 安全连接」。</b></div>
+<p>直接点下面这个链接即可：</p>
+<a class="btn" href="%s/index.html">打开政务门户（HTTPS · %d 端口）</a>
+<p>或在 Safari 地址栏手动完整输入：</p>
 <p class="u">%s/index.html</p>
-<ol><li>不要只输入 IP，也不要从聊天记录里点链接跳转 —— Safari 的
-HTTPS-Only 模式会把它当成 http 请求拦下来。</li>
-<li>若仍提示「不安全连接警告」，可临时在「设置 → App → Safari → 隐私与安全性」
-关闭该开关，装完证书后再打开。</li></ol>
-</html>""" % app_base).encode("utf-8")
+<ol><li>iOS 装完描述文件后，务必到「设置 → 通用 → 关于本机 →
+证书信任设置」开启<b>完全信任</b>，否则仍会提示连接不安全。</li>
+<li>若提示「不安全连接警告」，可临时在「设置 → App → Safari → 隐私与安全性」
+关闭该开关，装完证书后再打开。</li>
+<li>手机「设置 → 通用 → 日期与时间」请开启自动设置，时间偏差会导致证书被判无效。</li></ol>
+</html>""" % (CA_PORT, PORT, app_base, PORT, app_base)).encode("utf-8")
             self._send(200, "text/html; charset=utf-8", html)
             return
         self._send(404, "text/plain; charset=utf-8", b"Not found")
@@ -477,10 +490,42 @@ HTTPS-Only 模式会把它当成 http 请求拦下来。</li>
         self._send(405, "text/plain; charset=utf-8", b"Method not allowed")
 
 
-def start_ca_host():
-    """Start the enrolment-only HTTP server on a separate port."""
+class CaServer(Server):
+    """Enrolment port accepts BOTH plain HTTP and TLS on the same socket.
+
+    People often change http:// to https:// on the enrolment URL after
+    installing the CA. Without sniffing, that produces an opaque TLS error.
+    Peeking the first byte lets us serve the same guidance page either way.
+    """
+    tls_context = None
+
+    def get_request(self):
+        conn, addr = self.socket.accept()
+        if self.tls_context is not None:
+            try:
+                conn.settimeout(3)
+                head = conn.recv(1, socket.MSG_PEEK)
+                if head and head[0] == 0x16:  # TLS handshake record
+                    conn = self.tls_context.wrap_socket(conn, server_side=True)
+            except (OSError, ssl.SSLError):
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                raise
+            finally:
+                try:
+                    conn.settimeout(None)
+                except OSError:
+                    pass
+        return conn, addr
+
+
+def start_ca_host(tls_context=None):
+    """Start the enrolment-only server on a separate port."""
     try:
-        ca_srv = Server(("0.0.0.0", CA_PORT), CaHandler)
+        ca_srv = CaServer(("0.0.0.0", CA_PORT), CaHandler)
+        ca_srv.tls_context = tls_context
     except OSError as exc:
         print("  [ca] 证书下发端口 %d 不可用: %s" % (CA_PORT, exc), flush=True)
         return None
@@ -501,8 +546,11 @@ def main():
                 print("Set VDL_CERT / VDL_KEY, or unset VDL_TLS to serve plain HTTP.")
                 sys.exit(1)
         tls_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # iOS ATS requires TLS 1.2+, forward secrecy and SHA-256 signatures.
+        tls_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        chain = FULLCHAIN_FILE if (MANAGE_CERT and os.path.isfile(FULLCHAIN_FILE)) else CERT_FILE
         try:
-            tls_ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+            tls_ctx.load_cert_chain(chain, KEY_FILE)
         except (OSError, ssl.SSLError) as exc:
             print("Certificate load failed: %s" % exc)
             sys.exit(1)
@@ -531,7 +579,7 @@ def main():
             threading.Thread(target=cert_watchdog, args=(tls_ctx,),
                              daemon=True, name="vdl-cert-watchdog").start()
     if LAN:
-        ca_srv = start_ca_host()
+        ca_srv = start_ca_host(tls_ctx)
     print("=" * 66)
     print("  GRAND DUCHY OF VIDLAND · Chancellery sealed-channel host")
     print("  Origin: %s   (all four terminals share this origin)" % base)
@@ -541,6 +589,8 @@ def main():
         _, detail = cert_needs_renew()
         print("  Cert: 自动续签已开启 · 每 %d 秒检查 · %s · CA 复用（手机免操作）"
               % (CERT_CHECK_SEC, detail))
+        print("  Chain: %s（完整链：叶子 + CA，iOS 需要）"
+              % ("fullchain" if TLS_CHAIN_FILE == FULLCHAIN_FILE else "leaf-only"))
     elif TLS:
         print("  Cert: 使用外部证书，自动续签已跳过（VDL_CERT / VDL_KEY）")
     print("-" * 66)
