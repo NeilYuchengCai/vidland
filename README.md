@@ -61,13 +61,22 @@ VDL_OPENSSL=C:\path\to\openssl.exe python quickstart.py lan
 
 ### 手机端：每台设备装一次根证书
 
-在同一 WiFi 下打开控制台打印的 `https://192.168.x.x:7431/ca.pem`，下载后安装，然后访问 `https://192.168.x.x:7431/index.html`。
+**先在 Safari 地址栏手动完整输入这个纯 HTTP 地址**（注意是 `http://`，端口 7432）：
 
-- **Android**：把文件存到手机，进「设置 → 安全和隐私 → 更多安全设置 → 加密和凭据 → 安装证书 → CA 证书」，选文件、确认锁屏密码。注意 Android 7 之后用户安装的 CA 属于「用户凭据」，部分 App 默认不信任；Chrome 若仍提示不安全，可在 `chrome://certificate-manager` 的本地证书里再导入一次（部分国产 ROM 还有「允许用户证书用于 VPN 和应用」开关，需打开）。
-- **iOS / iPadOS**：Safari 打开链接 → 允许下载描述文件 → 「设置 → 通用 → VPN 与设备管理」安装 → **再到「设置 → 通用 → 关于本机 → 证书信任设置」开启对该根证书的完全信任**。最后这步最容易漏，不做的话证书装了也不生效。
-- **临时偷懒**：Android Chrome 首次访问时直接点「高级 → 继续前往」通常也能用（加密接口仍可用），但会有警告条、且可能反复出现；iOS Safari 一般不给这个选项。
+```
+http://192.168.x.x:7432/
+```
 
-根证书有效期 10 年，装一次基本不用再管。
+这是一个专门的「证书下发页」，只提供公开的根证书和一段说明，不含存档、私钥或任何应用文件。为什么要用 HTTP：装 CA 需要先打开 HTTPS 页面，而 HTTPS 又要求先信任这个 CA——直接访问主站会卡在这个死循环里，iOS 18.2+ Safari 常报 `Navigation failed because the request was for an HTTP URL with HTTPS-Only enabled`。旁路端口把它拆开了。
+
+- **iPhone / iPad**：点页面上的「下载配置描述文件」（`.mobileconfig`，iOS 原生格式，比 `.crt` 可靠）→ 「设置 → 通用 → VPN 与设备管理」安装 → **再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任**。最后这步最容易漏，不做等于没装。
+- **Android**：点「下载根证书 (.crt)」→「设置 → 安全和隐私 → 更多安全设置 → 加密和凭据 → 安装证书 → CA 证书」→ 确认锁屏密码。Android 7 之后用户 CA 属于「用户凭据」，部分 App 默认不信任；Chrome 若仍提示不安全，可在 `chrome://certificate-manager` 里再导入一次（部分国产 ROM 还有「允许用户证书用于 VPN 和应用」开关需打开）。
+
+装好后，**在 Safari 地址栏手动完整输入** `https://192.168.x.x:7431/index.html`（必须带 `https://`）。不要只输 IP，也不要从聊天记录或书签点链接跳转——HTTPS-Only 模式会把这类请求当成 http 拦下来。若仍弹「不安全连接警告」，可临时在「设置 → App → Safari → 隐私与安全性」关闭该开关，装完证书后再打开。
+
+备用直链（证书装好后可用）：`https://192.168.x.x:7431/ca.mobileconfig`、`.../ca.crt`、`.../ca.pem`。旁路端口可用 `VDL_CA_PORT` 修改，需同步放行防火墙。
+
+根证书有效期 10 年，装一次基本不用再管。临时偷懒：Android Chrome 首次访问时点「高级 → 继续前往」通常也能用，但会有警告条；iOS Safari 一般不给这个选项。
 
 ### 证书过期 / IP 变了怎么办
 

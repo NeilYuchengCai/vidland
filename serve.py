@@ -17,6 +17,11 @@ context, which a plain http:// LAN IP is not, so TLS is mandatory there.
     VDL_LAN=1 python serve.py
     VDL_LAN=1 VDL_ADMIN_LAN=1 python serve.py   # also expose admin (unsafe)
 
+LAN mode also starts a plain-HTTP enrolment server on port 7432 that serves
+ONLY the public root CA and a setup page. This breaks the chicken-and-egg
+problem of needing HTTPS (which needs the untrusted CA) to download that CA.
+Set VDL_CA_PORT to change it. No register, keys or app files are exposed.
+
 When using the default self-generated certificate, the host renews it
 automatically at startup and every 6 hours (before expiry or when the LAN
 IP changes), then hot-reloads the TLS context without restarting. The root
@@ -73,8 +78,16 @@ _store_lock = threading.Lock()
 PUBLIC_FILES = frozenset({
     "/index.html", "/border.html", "/interior.html", "/admin.html",
     "/vidland-core.js", "/vidland-i18n.js", "/vidland-store.js",
-    "/vidland.css", "/ca.pem", "/favicon.ico",
+    "/vidland.css", "/ca.pem", "/ca.crt", "/ca.mobileconfig", "/favicon.ico",
 })
+
+# Enrolling a phone in the local CA is a chicken-and-egg problem: the HTTPS
+# page cannot be opened until the CA is trusted, but the CA lives on that
+# same page. A separate plain-HTTP port serves ONLY the public root CA (no
+# private key, no register, no application files). It is never used for app
+# traffic and stays off unless LAN mode is on.
+CA_PORT = int(os.environ.get("VDL_CA_PORT", str(PORT + 1)))
+MOBILECONFIG = os.path.join(STORE_DIR, "vidland-ca.mobileconfig")
 
 
 def local_addresses():
@@ -236,20 +249,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return self.path.split("?")[0].startswith("/api/store")
 
     # ---- static access control ----------------------------------------
-    def _serve_ca(self):
+    def _serve_ca(self, kind="crt"):
         """Hand the root CA to phones so they can trust the LAN certificate."""
-        if not os.path.isfile(CA_FILE):
-            self.send_error(404, "CA certificate not generated (run make_cert.py)")
+        if kind == "mobileconfig":
+            src = MOBILECONFIG
+            ctype = "application/x-apple-aspen-config"
+            fname = "vidland-ca.mobileconfig"
+        else:
+            src = CA_FILE
+            ctype = "application/x-x509-ca-cert"
+            fname = "vidland-ca.crt"
+        if not os.path.isfile(src):
+            self.send_error(404, "CA file not generated (run make_cert.py)")
             return
         try:
-            with open(CA_FILE, "rb") as f:
+            with open(src, "rb") as f:
                 body = f.read()
         except OSError:
-            self.send_error(500, "CA certificate unreadable")
+            self.send_error(500, "CA file unreadable")
             return
         self.send_response(200)
-        self.send_header("Content-Type", "application/x-x509-ca-cert")
-        self.send_header("Content-Disposition", 'attachment; filename="vidland-ca.crt"')
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % fname)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -258,11 +279,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         raw_path = urlsplit(self.path).path
         path = unquote(raw_path)
         if not self._is_api():
-            if path == "/ca.pem":
+            if path in ("/ca.pem", "/ca.crt", "/ca.mobileconfig"):
                 if not (TLS and LAN):
                     self.send_error(404, "Not found")
                     return
-                return self._serve_ca()
+                return self._serve_ca("mobileconfig" if path == "/ca.mobileconfig" else "crt")
             if path in ("/", ""):
                 path = "/index.html"
             if path not in PUBLIC_FILES:
@@ -371,6 +392,103 @@ class Server(http.server.ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+class CaHandler(http.server.BaseHTTPRequestHandler):
+    """Plain-HTTP enrolment endpoint. Serves ONLY the public root CA and a
+    short setup page. No register, no keys, no application files, no POST."""
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, code, ctype, body, extra=None):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        if extra:
+            for k, v in extra:
+                self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _ca_file(self, kind):
+        if kind == "mobileconfig":
+            src = MOBILECONFIG
+            ctype = "application/x-apple-aspen-config"
+            fname = "vidland-ca.mobileconfig"
+        else:
+            src = CA_FILE
+            ctype = "application/x-x509-ca-cert"
+            fname = "vidland-ca.crt"
+        if not os.path.isfile(src):
+            return ctype, fname, None
+        try:
+            with open(src, "rb") as f:
+                return ctype, fname, f.read()
+        except OSError:
+            return ctype, fname, None
+
+    def do_GET(self):
+        path = unquote(urlsplit(self.path).path)
+        if path in ("/ca.pem", "/ca.crt", "/ca.mobileconfig"):
+            ctype, fname, body = self._ca_file(
+                "mobileconfig" if path == "/ca.mobileconfig" else "crt")
+            if body is None:
+                self._send(404, "text/plain; charset=utf-8", b"CA not generated. Run make_cert.py.")
+                return
+            self._send(200, ctype, body,
+                       [("Content-Disposition", 'attachment; filename="%s"' % fname)])
+            return
+        if path in ("/", "/index.html"):
+            host = self.headers.get("Host", "127.0.0.1:%d" % CA_PORT)
+            host_only = host.split(":")[0]
+            app_base = "https://%s:%d" % (host_only, PORT)
+            html = ("""<!doctype html><html lang="zh"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>安装维兰德局域网根证书</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+max-width:680px;margin:32px auto;padding:0 20px;line-height:1.7;color:#1b1b1f}
+h1{font-size:20px}code,.u{background:#f2f2f7;padding:3px 7px;border-radius:5px;
+word-break:break-all;font-family:ui-monospace,Menlo,monospace;font-size:14px}
+.btn{display:block;margin:14px 0;padding:14px 18px;border-radius:10px;
+background:#0a5bd3;color:#fff;text-decoration:none;text-align:center;font-weight:600}
+.alt{background:#e9e9ef;color:#1b1b1f}.note{background:#fff6e0;padding:12px 16px;
+border-radius:10px;font-size:14px}ol{padding-left:22px}li{margin:10px 0}</style>
+<h1>安装根证书（仅第一次）</h1>
+<p>这个页面是 <b>纯 HTTP</b>，专门用来拿到根证书；它不含任何存档或密钥。
+装好后请改用下面的 HTTPS 地址访问终端。</p>
+<a class="btn" href="/ca.mobileconfig">iPhone / iPad：下载配置描述文件</a>
+<a class="btn alt" href="/ca.crt">Android / 其他：下载根证书 (.crt)</a>
+<div class="note"><b>iOS 必做：</b>下载后到「设置 → 通用 → VPN 与设备管理」安装描述文件，
+再到「设置 → 通用 → 关于本机 → 证书信任设置」开启对该根证书的完全信任。
+漏掉最后一步 Safari 仍会报警告。</div>
+<h1>装好之后访问</h1>
+<p>请在 Safari 地址栏<b>手动完整输入</b>（必须带 <code>https://</code>）：</p>
+<p class="u">%s/index.html</p>
+<ol><li>不要只输入 IP，也不要从聊天记录里点链接跳转 —— Safari 的
+HTTPS-Only 模式会把它当成 http 请求拦下来。</li>
+<li>若仍提示「不安全连接警告」，可临时在「设置 → App → Safari → 隐私与安全性」
+关闭该开关，装完证书后再打开。</li></ol>
+</html>""" % app_base).encode("utf-8")
+            self._send(200, "text/html; charset=utf-8", html)
+            return
+        self._send(404, "text/plain; charset=utf-8", b"Not found")
+
+    def do_POST(self):
+        self._send(405, "text/plain; charset=utf-8", b"Method not allowed")
+
+
+def start_ca_host():
+    """Start the enrolment-only HTTP server on a separate port."""
+    try:
+        ca_srv = Server(("0.0.0.0", CA_PORT), CaHandler)
+    except OSError as exc:
+        print("  [ca] 证书下发端口 %d 不可用: %s" % (CA_PORT, exc), flush=True)
+        return None
+    threading.Thread(target=ca_srv.serve_forever, daemon=True,
+                     name="vdl-ca-host").start()
+    return ca_srv
+
+
 def main():
     tls_ctx = None
     if TLS:
@@ -406,11 +524,14 @@ def main():
         print("Port %d unavailable: %s" % (PORT, exc))
         print("Set another non-default port: VDL_PORT=NNNN python serve.py")
         sys.exit(1)
+    ca_srv = None
     if TLS:
         httpd.socket = tls_ctx.wrap_socket(httpd.socket, server_side=True)
         if MANAGE_CERT and CERT_CHECK_SEC > 0:
             threading.Thread(target=cert_watchdog, args=(tls_ctx,),
                              daemon=True, name="vdl-cert-watchdog").start()
+    if LAN:
+        ca_srv = start_ca_host()
     print("=" * 66)
     print("  GRAND DUCHY OF VIDLAND · Chancellery sealed-channel host")
     print("  Origin: %s   (all four terminals share this origin)" % base)
@@ -428,9 +549,13 @@ def main():
         print("  %-24s %s%s%s" % (name, base, path, "  [host only]" if blocked else ""))
     if LAN:
         print("-" * 66)
-        print("  Mobile / LAN:")
-        print("    1. Install the root CA:  %s/ca.pem" % base)
-        print("    2. Open:                 %s/index.html" % base)
+        print("  Mobile / LAN · 手机安装根证书（只需一次）:")
+        print("    在 Safari 地址栏手动完整输入（纯 HTTP，仅用于下发证书）:")
+        print("      http://%s:%d/" % (shown_host, CA_PORT))
+        print("    iPhone 用页面上的「配置描述文件」，装完记得开启完全信任。")
+        print("    装好后改用 HTTPS 访问终端（必须带 https://）:")
+        print("      %s/index.html" % base)
+        print("    备用直链: %s/ca.mobileconfig  |  %s/ca.crt" % (base, base))
         if not ADMIN_LAN:
             print("    admin.html is served to this host only (private key protection).")
     print("-" * 66)

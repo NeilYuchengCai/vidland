@@ -19,13 +19,16 @@ on PATH or in the usual Windows install locations, or set VDL_OPENSSL to
 an explicit executable path.
 """
 import datetime
+import base64
 import glob
+import hashlib
 import os
 import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -36,6 +39,8 @@ SRV_KEY = OUT / "lan-key.pem"
 SRV_CERT = OUT / "lan-cert.pem"
 CSR = OUT / "_server.csr"
 EXT = OUT / "_server.ext"
+MOBILECONFIG = OUT / "vidland-ca.mobileconfig"
+PROFILE_ID = "dev.vidland.lan.rootca"
 
 DAYS_CA = 3650
 DAYS_SRV = 365          # iOS/Safari reject server certs valid over 398 days
@@ -165,6 +170,60 @@ def ensure_ca(new_ca):
     return False
 
 
+def write_mobileconfig():
+    """Apple configuration profile carrying the root CA. iOS installs this
+    far more reliably than a bare .crt download (no Safari MIME guessing)."""
+    pem = CA_CERT.read_text(encoding="ascii")
+    body = "".join(l.strip() for l in pem.splitlines()
+                   if not l.startswith("-----"))
+    der = base64.b64decode(body)
+    stable = str(uuid.uuid5(uuid.NAMESPACE_DNS, PROFILE_ID))
+    item = str(uuid.uuid5(uuid.NAMESPACE_DNS, PROFILE_ID + ".cert"))
+    payload = base64.b64encode(der).decode("ascii")
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadContent</key>
+      <data>%s</data>
+      <key>PayloadType</key>
+      <string>com.apple.security.root</string>
+      <key>PayloadDisplayName</key>
+      <string>Vidland Local Root CA</string>
+      <key>PayloadIdentifier</key>
+      <string>%s.cert</string>
+      <key>PayloadUUID</key>
+      <string>%s</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>Vidland LAN Root CA</string>
+  <key>PayloadIdentifier</key>
+  <string>%s</string>
+  <key>PayloadUUID</key>
+  <string>%s</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadDescription</key>
+  <string>Trust the local root CA for the Vidland LAN terminals.</string>
+  <key>PayloadOrganization</key>
+  <string>Vidland</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+</dict>
+</plist>
+""" % (payload, PROFILE_ID, item, PROFILE_ID, stable)
+    MOBILECONFIG.write_text(xml, encoding="utf-8")
+    return MOBILECONFIG
+
+
 def issue_server_cert():
     ips = lan_ips()
     san = ["DNS:localhost", "IP:127.0.0.1"] + ["IP:" + a for a in sorted(ips)]
@@ -209,9 +268,13 @@ def main():
     new_ca = "--new-ca" in sys.argv
     try:
         ca_rebuilt = ensure_ca(new_ca)
+        write_mobileconfig()
     except RuntimeError as exc:
         print("证书生成失败：%s" % exc, file=sys.stderr)
         print(openssl_missing_hint(), file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print("描述文件生成失败：%s" % exc, file=sys.stderr)
         return 1
 
     left = cert_days_left(SRV_CERT)

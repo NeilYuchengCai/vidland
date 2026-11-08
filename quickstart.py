@@ -266,15 +266,20 @@ def lan_start():
         except Exception:
             ip = '192.168.x.x'
         base = 'https://%s:%d' % (ip, PORT)
+        ca_port = int(os.environ.get('VDL_CA_PORT', str(PORT + 1)))
+        enrol = 'http://%s:%d/' % (ip, ca_port)
         # Keep the printed terminal URLs consistent with the address phones
         # must actually use; urls() above targets loopback for local checks.
         print('\n  局域网模式已启用（HTTPS · 0.0.0.0:%d）' % PORT)
-        print('  四端地址（手机请用这组，勿用 127.0.0.1）：')
+        print('  【手机第一步】在 Safari 地址栏手动完整输入这个纯 HTTP 地址：')
+        print('      %s' % enrol)
+        print('    iPhone 点「下载配置描述文件」→ 设置里安装 → 证书信任设置开启完全信任。')
+        print('    Android 点「下载根证书 (.crt)」→ 设置里作为 CA 证书安装。')
+        print('    这个页面只下发根证书，不含存档和密钥；绕过「未信任证书打不开 HTTPS」的死循环。')
+        print('  【第二步】装好后改用 HTTPS 访问终端（必须带 https://）：')
         for _name, _path in PAGES:
             _note = '  [仅本机]' if _path == '/admin.html' else ''
             print('    %-24s %s%s%s' % (_name, base, _path, _note))
-        print('  手机先安装根证书：%s/ca.pem' % base)
-        print('  再打开终端：      %s/index.html' % base)
         print('  管理端 admin.html 仅本机可访问（保护私钥）。')
         print('  若手机连不上，请放行 Windows 防火墙 TCP %d 入站。' % PORT)
     return ok
