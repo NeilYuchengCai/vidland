@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+<defs>
+  <!-- userSpaceOnUse is mandatory: a gradient in objectBoundingBox units
+       cannot resolve on a straight line (zero-width/height bbox), which makes
+       thin strokes silently disappear. -->
+  <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="512">
+    <stop offset="0" stop-color="#16314e"/><stop offset="1" stop-color="#081626"/>
+  </linearGradient>
+  <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="512">
+    <stop offset="0" stop-color="#e8d39e"/><stop offset=".5" stop-color="#c9a763"/>
+    <stop offset="1" stop-color="#9c7838"/>
+  </linearGradient>
+</defs>
+<rect width="512" height="512" fill="url(#bg)"/>
+<rect x="52" y="52" width="408" height="408" rx="36" fill="none" stroke="url(#g)" stroke-width="4" opacity=".9"/>
+<rect x="64" y="64" width="384" height="384" rx="28" fill="none" stroke="#e6cd95" stroke-width="1.2" opacity=".3"/>
+<path d="M106 94 L118 106 L106 118 L94 106 Z" fill="#e6cd95" opacity=".45"/>
+  <path d="M406 94 L418 106 L406 118 L394 106 Z" fill="#e6cd95" opacity=".45"/>
+  <path d="M96 418 L108 430 L96 442 L84 430 Z" fill="#e6cd95" opacity=".45"/>
+  <path d="M416 418 L428 430 L416 442 L404 430 Z" fill="#e6cd95" opacity=".45"/>
+<path d="M181 106 L206 74 L231 101 L256 62 L281 101 L306 74 L331 106 Z" fill="url(#g)"/>
+<circle cx="206" cy="68" r="4.6" fill="#e6cd95"/>
+<circle cx="256" cy="56" r="4.6" fill="#e6cd95"/>
+<circle cx="306" cy="68" r="4.6" fill="#e6cd95"/>
+<path d="M136 150 H376 V292 Q376 358 256 390 Q136 358 136 292 Z" fill="#122a44" stroke="url(#g)" stroke-width="5"/>
+<path d="M146 160 H366 V290 Q366 350 256 380 Q146 350 146 290 Z" fill="none" stroke="#e6cd95" stroke-width="1.2" opacity=".3"/>
+
+      <g fill="none" stroke="url(#g)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M182 214 H330"/>
+        <path d="M256 214 V310"/>
+        <path d="M226 310 H286"/>
+        <path d="M236 326 H276"/>
+        <path d="M196 214 V246"/>
+        <path d="M316 214 V246"/>
+        <path d="M172 246 Q196 276 220 246"/>
+        <path d="M292 246 Q316 276 340 246"/>
+      </g>
+      <path d="M256 184 L264 198 L256 212 L248 198 Z" fill="#e6cd95"/>
+<path d="M112 408 H400 L384 430 L400 452 H112 L128 430 Z" fill="#081626" stroke="url(#g)" stroke-width="2"/>
+<text x="256" y="440" font-family="Georgia,'Times New Roman',serif" font-size="26"
+      letter-spacing="9" fill="url(#g)" text-anchor="middle">VIDLAND</text>
+</svg>

@@ -1,0 +1,25 @@
+{
+  "name": "维兰德公国 · 入境安全检查署",
+  "short_name": "入境安检",
+  "description": "维兰德公国政务模拟终端（虚构公国游戏 / 模拟器）",
+  "lang": "zh-CN",
+  "start_url": "/border.html",
+  "scope": "/",
+  "display": "browser",
+  "background_color": "#081626",
+  "theme_color": "#0a1b2e",
+  "icons": [
+    {
+      "src": "/icons/border-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/border-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

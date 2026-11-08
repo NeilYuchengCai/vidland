@@ -38,6 +38,7 @@ import http.server
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -86,6 +87,24 @@ PUBLIC_FILES = frozenset({
     "/vidland-core.js", "/vidland-i18n.js", "/vidland-store.js",
     "/vidland.css", "/ca.pem", "/ca.crt", "/ca.mobileconfig", "/favicon.ico",
 })
+
+# Terminal icons / manifests. Only flat files with an allowlisted extension;
+# no subdirectories and no traversal, so the icons folder cannot be used to
+# reach anything else under ROOT.
+ICON_PREFIX = "/icons/"
+ICON_EXT = frozenset({".svg", ".png", ".json"})
+SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def is_public_static(path):
+    if path in PUBLIC_FILES:
+        return True
+    if not path.startswith(ICON_PREFIX):
+        return False
+    name = path[len(ICON_PREFIX):]
+    return (bool(name) and "/" not in name and "\\" not in name
+            and SAFE_NAME.fullmatch(name) is not None
+            and os.path.splitext(name)[1].lower() in ICON_EXT)
 
 # Enrolling a phone in the local CA is a chicken-and-egg problem: the HTTPS
 # page cannot be opened until the CA is trusted, but the CA lives on that
@@ -293,7 +312,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._serve_ca("mobileconfig" if path == "/ca.mobileconfig" else "crt")
             if path in ("/", ""):
                 path = "/index.html"
-            if path not in PUBLIC_FILES:
+            if not is_public_static(path):
                 self.send_error(404, "Not found")
                 return
             if path == "/admin.html" and LAN and not ADMIN_LAN and not is_local_peer(self.client_address[0]):
