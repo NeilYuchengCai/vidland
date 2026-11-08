@@ -243,8 +243,15 @@ def lan_start():
                 encoding='utf-8', errors='replace')
     if r.returncode != 0 or not cert.is_file():
         print('  证书生成失败，局域网模式需要 TLS 证书。')
-        if r.stderr:
-            print('  ' + r.stderr.strip().replace('\n', '\n  '))
+        # Surface BOTH streams: some failures are reported on stdout.
+        detail = (r.stderr or '').strip() or (r.stdout or '').strip()
+        if detail:
+            print('  原因：')
+            for line in detail.splitlines():
+                print('  ' + line)
+        else:
+            print('  原因：make_cert.py 退出码 %d，未给出更多信息。' % r.returncode)
+            print('  可手动运行 python make_cert.py 查看详细输出。')
         return False
     os.environ['VDL_LAN'] = '1'
     os.environ['VDL_TLS'] = '1'

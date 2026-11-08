@@ -51,6 +51,14 @@ VDL_LAN=1 python serve.py
 
 `VDL_LAN=1` 会自动开启 TLS 并绑定 `0.0.0.0`。未设置时行为与原来完全一致（本机纯 HTTP）。
 
+首次运行需要 **OpenSSL** 来生成证书。脚本会先在 PATH 里找，找不到时自动探测常见安装位置（Git for Windows、OpenSSL-Win、WorkBuddy 自带 PortableGit 等），所以双击 `quickstart.bat` 也能用。万一你的机器上确实没有，控制台会直接给出原因和三种解法；也可以手动指定：
+
+```
+VDL_OPENSSL=C:\path\to\openssl.exe python quickstart.py lan
+```
+
+安装 Git for Windows 是最省事的办法（自带 `openssl.exe`）。证书文件本身不进仓库，别人 clone 后需要各自生成一套。
+
 ### 手机端：每台设备装一次根证书
 
 在同一 WiFi 下打开控制台打印的 `https://192.168.x.x:7431/ca.pem`，下载后安装，然后访问 `https://192.168.x.x:7431/index.html`。

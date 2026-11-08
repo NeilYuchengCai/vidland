@@ -14,9 +14,12 @@ Why "keep the CA": phones trust the root CA for 10 years. Renewing the
 short-lived server certificate under the SAME CA needs no action on any
 phone. Rebuilding the CA is what forces every device to reinstall it.
 
-All outputs go to vidland-data/ (git-ignored). Requires OpenSSL on PATH.
+All outputs go to vidland-data/ (git-ignored). Needs OpenSSL; it is found
+on PATH or in the usual Windows install locations, or set VDL_OPENSSL to
+an explicit executable path.
 """
 import datetime
+import glob
 import os
 import shutil
 import socket
@@ -45,8 +48,46 @@ def say(msg):
         print(msg)
 
 
+def find_openssl():
+    """PATH first, then the usual Windows install locations. A GUI/double
+    click launch has a much smaller PATH than an interactive shell, so
+    relying on PATH alone makes certificate generation fail mysteriously."""
+    override = os.environ.get("VDL_OPENSSL", "").strip().strip('"')
+    if override:
+        return override if os.path.isfile(override) else None
+    found = shutil.which("openssl")
+    if found:
+        return found
+    pats = [
+        r"C:\Program Files\Git\usr\bin\openssl.exe",
+        r"C:\Program Files (x86)\Git\usr\bin\openssl.exe",
+        r"C:\Program Files\OpenSSL-Win*\bin\openssl.exe",
+        r"C:\Program Files (x86)\OpenSSL-Win*\bin\openssl.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\usr\bin\openssl.exe"),
+        os.path.expandvars(r"%USERPROFILE%\.workbuddy\binaries\PortableGit\versions\*\usr\bin\openssl.EXE"),
+        r"E:\安装\WorkBuddy\resources\vendor\PortableGit\usr\bin\openssl.EXE",
+    ]
+    for pat in pats:
+        for hit in sorted(glob.glob(pat), reverse=True):
+            if os.path.isfile(hit):
+                return hit
+    return None
+
+
+OPENSSL = find_openssl()
+
+
+def openssl_missing_hint():
+    return ("找不到 OpenSSL，无法生成局域网所需的 TLS 证书。\n"
+            "  解决办法（任选其一）：\n"
+            "    1) 安装 Git for Windows（自带 openssl.exe），然后重新运行；\n"
+            "    2) 把 openssl.exe 所在目录加入 PATH 后重新运行；\n"
+            "    3) 用环境变量直接指定：VDL_OPENSSL=C:\\path\\to\\openssl.exe\n"
+            "  另可手动执行：python make_cert.py 查看详细输出。")
+
+
 def run(args):
-    r = subprocess.run(["openssl"] + args, capture_output=True, text=True,
+    r = subprocess.run([OPENSSL] + args, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError("openssl %s failed:\n%s" % (" ".join(args[:2]), r.stderr.strip()))
@@ -155,8 +196,9 @@ def issue_server_cert():
 
 
 def main():
-    if shutil.which("openssl") is None:
-        print("OpenSSL not found on PATH. Install it or set PATH and retry.")
+    if OPENSSL is None:
+        # stderr, so a caller capturing only stderr still sees the real cause.
+        print(openssl_missing_hint(), file=sys.stderr)
         return 1
     OUT.mkdir(exist_ok=True)
 
@@ -165,7 +207,12 @@ def main():
 
     force = "--force" in sys.argv
     new_ca = "--new-ca" in sys.argv
-    ca_rebuilt = ensure_ca(new_ca)
+    try:
+        ca_rebuilt = ensure_ca(new_ca)
+    except RuntimeError as exc:
+        print("证书生成失败：%s" % exc, file=sys.stderr)
+        print(openssl_missing_hint(), file=sys.stderr)
+        return 1
 
     left = cert_days_left(SRV_CERT)
     missing_ips = lan_ips() - cert_san_ips(SRV_CERT)
@@ -179,7 +226,12 @@ def main():
         say("  服务器证书剩余 %d 天，自动续期…" % left)
     if missing_ips:
         say("  检测到新 IP %s，自动重签…" % ", ".join(sorted(missing_ips)))
-    issue_server_cert()
+    try:
+        issue_server_cert()
+    except RuntimeError as exc:
+        print("证书签发失败：%s" % exc, file=sys.stderr)
+        print(openssl_missing_hint(), file=sys.stderr)
+        return 1
     return 0
 
 

@@ -164,7 +164,8 @@ def ensure_cert(reason="启动检查"):
                            capture_output=True, text=True, timeout=60,
                            encoding="utf-8", errors="replace")
         if r.returncode != 0:
-            return False, "续签失败: %s" % (r.stderr or "").strip()[:120]
+            why = (r.stderr or "").strip() or (r.stdout or "").strip() or "无输出"
+            return False, "续签失败 (退出码 %d): %s" % (r.returncode, why[:200])
         ok = os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE)
         return ok, ("%s → 已自动续签（%s，CA 未变，手机无需操作）" % (reason, detail)
                     if ok else "续签后证书仍缺失")
