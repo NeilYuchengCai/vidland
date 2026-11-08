@@ -234,14 +234,18 @@ def view_log():
 def lan_start():
     """Start LAN mode: HTTPS on 0.0.0.0, with a local CA for phone trust."""
     import subprocess as _sp
-    from pathlib import Path as _Path
     cert = ROOT / 'vidland-data' / 'lan-cert.pem'
-    if not cert.is_file():
-        print('  未找到证书，正在生成 CA 与服务器证书…')
-        r = _sp.run([sys.executable, str(ROOT / 'make_cert.py')], cwd=str(ROOT))
-        if r.returncode != 0 or not cert.is_file():
-            print('  证书生成失败，局域网模式需要 TLS 证书。')
-            return False
+    # Idempotent: creates the CA on first run, auto-renews the server cert
+    # before expiry or when the LAN IP changes, and keeps the CA so phones
+    # never need to reinstall anything.
+    r = _sp.run([sys.executable, str(ROOT / 'make_cert.py'), '--quiet'],
+                cwd=str(ROOT), capture_output=True, text=True,
+                encoding='utf-8', errors='replace')
+    if r.returncode != 0 or not cert.is_file():
+        print('  证书生成失败，局域网模式需要 TLS 证书。')
+        if r.stderr:
+            print('  ' + r.stderr.strip().replace('\n', '\n  '))
+        return False
     os.environ['VDL_LAN'] = '1'
     os.environ['VDL_TLS'] = '1'
     ok = start()
