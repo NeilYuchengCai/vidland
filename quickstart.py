@@ -11,6 +11,7 @@ unrelated Python or browser process.
     python quickstart.py stop | restart | status | open | log
 """
 import os
+import ssl
 import sys
 import time
 import subprocess
@@ -31,7 +32,9 @@ STATE.mkdir(exist_ok=True)
 PID_FILE = STATE / 'vdl-server.pid'
 LOG_FILE = STATE / 'vdl-server.log'
 PORT = int(os.environ.get('VDL_PORT', '7431'))
-BASE = 'http://127.0.0.1:%d' % PORT
+TLS = os.environ.get('VDL_TLS', '').strip().lower() in ('1', 'true', 'yes', 'on')
+SCHEME = 'https' if TLS else 'http'
+BASE = '%s://127.0.0.1:%d' % (SCHEME, PORT)
 PAGES = [
     ('Civil Affairs Portal', '/index.html'),
     ('Frontier Inspection',  '/border.html'),
@@ -85,7 +88,15 @@ def pid_alive(pid):
 
 def http_ok():
     try:
-        with urllib.request.urlopen(BASE + '/index.html', timeout=1.2) as r:
+        # A locally generated certificate is not in any trust store; only
+        # skip verification for our own loopback probe, never for clients.
+        ctx = None
+        if TLS:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(BASE + '/index.html', timeout=1.2,
+                                    context=ctx) as r:
             return r.status == 200
     except Exception:
         return False

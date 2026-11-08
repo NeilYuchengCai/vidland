@@ -8,22 +8,36 @@ are shared between them. Opening the files via file:// is not supported.
 
     python serve.py
     VDL_PORT=7431 python serve.py
+
+Optional TLS (needed once terminals are reached from another device over
+the LAN: Web Crypto requires a secure context, which a plain http:// LAN
+IP is not). Enabled only when VDL_TLS=1. Certificates live under
+vidland-data/, which is git-ignored, so private keys never enter the repo.
+
+    VDL_TLS=1 python serve.py
+    VDL_TLS=1 VDL_HOST=0.0.0.0 python serve.py
+    VDL_TLS=1 VDL_CERT=fullchain.pem VDL_KEY=privkey.pem python serve.py
 """
 import http.server
 import json
 import os
+import ssl
 import sys
 import tempfile
 import threading
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("VDL_PORT", "7431"))
+HOST = os.environ.get("VDL_HOST", "127.0.0.1")
+TLS = os.environ.get("VDL_TLS", "").strip().lower() in ("1", "true", "yes", "on")
 
 # Local-disk persistence: the encrypted register is mirrored to a real file
 # on the host machine so it survives browser restarts and is shared by all
 # four terminals. {rev, data{key: value-string}}.
 STORE_DIR = os.path.join(ROOT, "vidland-data")
 STORE_FILE = os.path.join(STORE_DIR, "store.json")
+CERT_FILE = os.environ.get("VDL_CERT", os.path.join(STORE_DIR, "lan-cert.pem"))
+KEY_FILE = os.environ.get("VDL_KEY", os.path.join(STORE_DIR, "lan-key.pem"))
 _store_lock = threading.Lock()
 
 
@@ -165,16 +179,35 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 def main():
-    base = "http://127.0.0.1:%d" % PORT
+    if TLS:
+        for f in (CERT_FILE, KEY_FILE):
+            if not os.path.isfile(f):
+                print("TLS enabled but certificate file missing: %s" % f)
+                print("Set VDL_CERT / VDL_KEY, or unset VDL_TLS to serve plain HTTP.")
+                sys.exit(1)
+    scheme = "https" if TLS else "http"
+    shown_host = "127.0.0.1" if HOST in ("0.0.0.0", "", "::") else HOST
+    base = "%s://%s:%d" % (scheme, shown_host, PORT)
     try:
-        httpd = Server(("127.0.0.1", PORT), Handler)
+        httpd = Server((HOST, PORT), Handler)
     except OSError as exc:
         print("Port %d unavailable: %s" % (PORT, exc))
         print("Set another non-default port: VDL_PORT=NNNN python serve.py")
         sys.exit(1)
+    if TLS:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+        except (OSError, ssl.SSLError) as exc:
+            print("Certificate load failed: %s" % exc)
+            httpd.server_close()
+            sys.exit(1)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
     print("=" * 66)
     print("  GRAND DUCHY OF VIDLAND · Chancellery sealed-channel host")
     print("  Origin: %s   (all four terminals share this origin)" % base)
+    print("  Transport: %s   Bound: %s:%d" %
+          ("HTTPS / TLS" if TLS else "plain HTTP (loopback only)", HOST, PORT))
     print("-" * 66)
     for name, path in PAGES:
         print("  %-24s %s%s" % (name, base, path))
