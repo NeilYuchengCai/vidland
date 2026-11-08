@@ -50,7 +50,17 @@
   }
   makeReady();
 
-  function fsaAvailable() { return typeof global.showDirectoryPicker === 'function'; }
+  /* FSA writes to a folder chosen on THIS device. When the page is reached
+     from another device (LAN IP / domain), that would fork the archive away
+     from the shared server-side register. Force the XHR backend so every
+     terminal reads and writes the same store.json and the rev-poll sync
+     stays authoritative. Loopback keeps FSA (server may be down). */
+  function fsaAvailable() {
+    var h = global.location && global.location.hostname;
+    if (h && h !== '127.0.0.1' && h !== 'localhost' &&
+        h !== '[::1]' && h !== '::1') return false;
+    return typeof global.showDirectoryPicker === 'function';
+  }
   function reapplyDirty() {
     Object.keys(dirty).forEach(function (k) {
       if (dirty[k].v === null) delete mem[k]; else mem[k] = dirty[k].v;

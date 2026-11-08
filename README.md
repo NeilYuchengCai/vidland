@@ -30,19 +30,47 @@
 - **可选静态服务**：`python serve.py` 仅用于在本机起一个静态服务来加载页面；存档本身不依赖它长驻。它也提供加密登记册的读写接口，供不支持文件夹授权的浏览器（如手机、Firefox）使用。
 - **六语界面**：内置词库支持多语言切换。
 
-## 可选：用 HTTPS 运行
+## 局域网访问（手机 / 平板）
 
-浏览器只允许在安全上下文（`https://` 或 `localhost`）里使用加密接口。若改用局域网 IP 访问（例如手机访问电脑），必须启用 HTTPS，否则登记册无法加解密。
+把电脑当作服务器，让同一 WiFi 下的移动设备访问。存档仍然写在**电脑本机**，各设备通过轮询服务端版本号实时同步。
 
-本机自备证书后：
+**为什么必须用 HTTPS**：浏览器只允许在安全上下文（`https://` 或 `localhost`）里使用加密接口。用 `http://192.168.x.x` 这种局域网 IP 访问时，`crypto.subtle` 不可用，整个加密登记册会失效。
+
+### 一键启用
 
 ```
-VDL_TLS=1 python serve.py
+python quickstart.py lan
 ```
 
-证书默认读取 `vidland-data/lan-cert.pem` 和 `lan-key.pem`（该目录已被忽略，私钥不会进入仓库），也可用 `VDL_CERT` / `VDL_KEY` 指定。未设置 `VDL_TLS` 时行为与原来完全一致，仍是纯 HTTP。
+等价的手动方式：
 
-需要注意：`admin.html` 内含解密申请材料所需的私钥。若把服务开放到局域网（`VDL_HOST=0.0.0.0` 并放行防火墙），同一网络的设备都能下载这个文件。建议只向其他设备提供门户与安检三个终端，管理端仍留在本机访问。
+```
+python make_cert.py
+VDL_LAN=1 python serve.py
+```
+
+`VDL_LAN=1` 会自动开启 TLS 并绑定 `0.0.0.0`。未设置时行为与原来完全一致（本机纯 HTTP）。
+
+### 手机端两步
+
+1. 在同一 WiFi 下打开控制台打印的 `https://192.168.x.x:7431/ca.pem`，下载并安装根证书。
+   - Android：设置里安装为「VPN 与应用的 CA 证书」。
+   - iOS：Safari 打开后会提示安装描述文件，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。
+2. 打开 `https://192.168.x.x:7431/index.html`。装好根证书后不会有安全警告。
+
+证书由 `make_cert.py` 生成，包含 `localhost`、回环地址和本机所有网卡 IP；换 IP 后重跑 `python make_cert.py --force` 并重新在手机上安装根证书即可。也可以用 `VDL_LAN_IP` 指定额外 IP，或用 `VDL_LAN_DNS` 追加域名。所有证书与私钥都放在 `vidland-data/`，该目录已被忽略，不会进入仓库。
+
+如果手机连不上，需要放行 Windows 防火墙的 TCP 7431 入站（专用网络）：
+
+```
+netsh advfirewall firewall add rule name="Vidland LAN 7431" dir=in action=allow protocol=TCP localport=7431 profile=private,domain
+```
+
+### 两点安全说明
+
+- `admin.html` 内含解密申请材料所需的私钥，因此**局域网模式下管理端只对本机开放**，其他设备访问会返回 403。确需放开用 `VDL_ADMIN_LAN=1`，但不建议。
+- 服务端只提供四个 HTML、三个 JS、一个 CSS 和 `/ca.pem`；`vidland-data/`（含私钥与密文档案）、`.git/`、`.py` 文件都不可下载。
+- 证书是本地自签的。若希望手机**完全免配置**，可改用自有域名 + Let's Encrypt（DNS-01 挑战）签发的证书，把 A 记录指向内网 IP，再用 `VDL_CERT` / `VDL_KEY` 指定证书路径即可，服务端代码无需改动。
 
 ## 使用截图
 
@@ -59,6 +87,8 @@ VDL_TLS=1 python serve.py
 1. 在项目目录运行 `python serve.py`（默认端口 7431）。
 2. 用 **Chrome 或 Edge** 打开 `http://127.0.0.1:7431/index.html`（请走 localhost，不要用 `file://` 直接双击打开）。
 3. 首次进入后点击页面任意位置，按提示选择一个文件夹用于存放存档（建议选项目内的 `vidland-data`），之后存档直接落盘，四端实时同步。
+
+若要在手机等局域网设备上使用，改看上面的「局域网访问」一节：运行 `python quickstart.py lan`，手机通过 `https://` 访问时会自动改用共享的服务端存档（移动端不支持文件夹授权）。
 
 ## 许可证
 

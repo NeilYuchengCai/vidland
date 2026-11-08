@@ -8,7 +8,7 @@ unrelated Python or browser process.
 
     python quickstart.py              -> looping menu
     python quickstart.py start        -> one-shot commands
-    python quickstart.py stop | restart | status | open | log
+    python quickstart.py stop | restart | status | open | log | lan
 """
 import os
 import ssl
@@ -32,9 +32,15 @@ STATE.mkdir(exist_ok=True)
 PID_FILE = STATE / 'vdl-server.pid'
 LOG_FILE = STATE / 'vdl-server.log'
 PORT = int(os.environ.get('VDL_PORT', '7431'))
-TLS = os.environ.get('VDL_TLS', '').strip().lower() in ('1', 'true', 'yes', 'on')
-SCHEME = 'https' if TLS else 'http'
-BASE = '%s://127.0.0.1:%d' % (SCHEME, PORT)
+
+
+def tls_on():
+    return (os.environ.get('VDL_LAN', '').strip().lower() in ('1', 'true', 'yes', 'on')
+            or os.environ.get('VDL_TLS', '').strip().lower() in ('1', 'true', 'yes', 'on'))
+
+
+def base_url():
+    return '%s://127.0.0.1:%d' % ('https' if tls_on() else 'http', PORT)
 PAGES = [
     ('Civil Affairs Portal', '/index.html'),
     ('Frontier Inspection',  '/border.html'),
@@ -91,11 +97,11 @@ def http_ok():
         # A locally generated certificate is not in any trust store; only
         # skip verification for our own loopback probe, never for clients.
         ctx = None
-        if TLS:
+        if tls_on():
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(BASE + '/index.html', timeout=1.2,
+        with urllib.request.urlopen(base_url() + '/index.html', timeout=1.2,
                                     context=ctx) as r:
             return r.status == 200
     except Exception:
@@ -103,7 +109,7 @@ def http_ok():
 
 
 def urls():
-    return '\n'.join('    %-24s %s%s' % (name, BASE, path) for name, path in PAGES)
+    return '\n'.join('    %-24s %s%s' % (name, base_url(), path) for name, path in PAGES)
 
 
 def status():
@@ -208,7 +214,7 @@ def open_pages():
         print('  服务尚未就绪，请先选 [1] 启动。')
         return
     for name, path in PAGES:
-        webbrowser.open_new_tab(BASE + path)
+        webbrowser.open_new_tab(base_url() + path)
     print('  已在默认浏览器打开四个终端标签页。')
 
 
@@ -225,6 +231,44 @@ def view_log():
         print('  ' + ln)
 
 
+def lan_start():
+    """Start LAN mode: HTTPS on 0.0.0.0, with a local CA for phone trust."""
+    import subprocess as _sp
+    from pathlib import Path as _Path
+    cert = ROOT / 'vidland-data' / 'lan-cert.pem'
+    if not cert.is_file():
+        print('  未找到证书，正在生成 CA 与服务器证书…')
+        r = _sp.run([sys.executable, str(ROOT / 'make_cert.py')], cwd=str(ROOT))
+        if r.returncode != 0 or not cert.is_file():
+            print('  证书生成失败，局域网模式需要 TLS 证书。')
+            return False
+    os.environ['VDL_LAN'] = '1'
+    os.environ['VDL_TLS'] = '1'
+    ok = start()
+    if ok:
+        try:
+            import socket as _s
+            s = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+            s.connect(('223.5.5.5', 80))
+            ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            ip = '192.168.x.x'
+        base = 'https://%s:%d' % (ip, PORT)
+        # Keep the printed terminal URLs consistent with the address phones
+        # must actually use; urls() above targets loopback for local checks.
+        print('\n  局域网模式已启用（HTTPS · 0.0.0.0:%d）' % PORT)
+        print('  四端地址（手机请用这组，勿用 127.0.0.1）：')
+        for _name, _path in PAGES:
+            _note = '  [仅本机]' if _path == '/admin.html' else ''
+            print('    %-24s %s%s%s' % (_name, base, _path, _note))
+        print('  手机先安装根证书：%s/ca.pem' % base)
+        print('  再打开终端：      %s/index.html' % base)
+        print('  管理端 admin.html 仅本机可访问（保护私钥）。')
+        print('  若手机连不上，请放行 Windows 防火墙 TCP %d 入站。' % PORT)
+    return ok
+
+
 MENU = '''
 %s
   GRAND DUCHY OF VIDLAND  ·  政务系统快捷控制台
@@ -233,7 +277,7 @@ MENU = '''
    [1] 启动服务器          [2] 停止服务器（杀死进程）
    [3] 重启服务器          [4] 查看状态 / 端口占用
    [5] 浏览器打开四个终端   [6] 查看服务器日志
-   [0] 退出控制台
+   [7] 局域网模式（手机）   [0] 退出控制台
 %s''' % (BAR, PORT, BAR, BAR)
 
 
@@ -250,10 +294,12 @@ def dispatch(choice, interactive=True):
         open_pages()
     elif choice == '6':
         view_log()
+    elif choice == '7':
+        lan_start()
     elif choice == '0':
         return False
     else:
-        print('  无效选择，请输入 0–6。')
+        print('  无效选择，请输入 0–7。')
     return True
 
 
@@ -261,9 +307,9 @@ def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         alias = {'start': '1', 'stop': '2', 'restart': '3',
-                 'status': '4', 'open': '5', 'log': '6'}
+                 'status': '4', 'open': '5', 'log': '6', 'lan': '7'}
         if cmd not in alias:
-            print('用法: python quickstart.py [start|stop|restart|status|open|log]')
+            print('用法: python quickstart.py [start|stop|restart|status|open|log|lan]')
             return 1
         dispatch(alias[cmd], interactive=False)
         return 0
