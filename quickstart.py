@@ -48,6 +48,14 @@ def tls_on():
 
 MODE_LABEL = {'http': 'HTTP · 本机模式', 'https': 'HTTPS · 局域网模式'}
 
+# A loopback probe must never go through a proxy. Many Windows setups set
+# HTTP_PROXY/HTTPS_PROXY without a matching NO_PROXY for 127.0.0.1, which
+# makes urllib dial the proxy instead of our own port and report a healthy
+# server as "not ready".
+_PROBE_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=None))
+
 
 def _probe(scheme):
     """Probe one scheme. LAN certs are self-signed, so verification is
@@ -58,9 +66,14 @@ def _probe(scheme):
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}),
+                urllib.request.HTTPSHandler(context=ctx))
+        else:
+            opener = _PROBE_OPENER
+        with opener.open(
                 '%s://127.0.0.1:%d/index.html' % (scheme, PORT),
-                timeout=0.8, context=ctx) as r:
+                timeout=1.0) as r:
             return r.status == 200
     except Exception:
         return False
@@ -200,6 +213,9 @@ def start(mode=None):
         # Strip any stale mode flags, then set exactly what this run needs.
         child_env.pop('VDL_LAN', None)
         child_env.pop('VDL_TLS', None)
+        # The log file is opened as UTF-8. Without this, a Chinese Windows
+        # console makes the child emit GBK bytes and [6] shows mojibake.
+        child_env['PYTHONIOENCODING'] = 'utf-8'
         if effective == 'lan':
             child_env['VDL_LAN'] = '1'
             child_env['VDL_TLS'] = '1'
@@ -218,7 +234,7 @@ def start(mode=None):
     except Exception as e:
         print('  启动失败：%s' % e)
         return False
-    for _ in range(24):
+    for _ in range(40):
         if _probe(expected):
             break
         time.sleep(0.25)
@@ -226,7 +242,12 @@ def start(mode=None):
         print('  ✓ 政务服务已启动 · PID %d · 端口 %d（后台无窗口运行）' % (p.pid, PORT))
         print(urls())
         return True
-    print('  ! 进程已拉起但 HTTP 尚未就绪，请选 [6] 查看日志。')
+    # A live process that never answers is almost always a port/bind failure
+    # or a crash during TLS setup. Say so, and show the useful facts.
+    print('  ! 进程已拉起但 %s 探测未就绪。' % MODE_LABEL[expected])
+    print('    端口监听: %s' % (', '.join(map(str, port_pids())) or '无'))
+    print('    进程状态: %s' % ('仍在' if pid_alive(p.pid) else '已退出'))
+    print('    日志: %s （可运行 python quickstart.py log 查看最后 20 行）' % LOG_FILE)
     return False
 
 
