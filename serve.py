@@ -251,6 +251,153 @@ def _write_store(obj):
         json.dump(obj, f, ensure_ascii=False)
     os.replace(tmp, STORE_FILE)
 
+
+# ---- plain-text inspection protocol drafts ------------------------------
+# The Chancellery writes R/Z/A/M protocols as TXT files in protocols/. The
+# server only PARSES them into neutral JSON; it never writes the encrypted
+# register. The browser imports them through Vault.mutate(), so the seal key
+# never leaves the client and the usual sync/ledger path is preserved.
+PROTOCOL_DIR = os.path.join(ROOT, "protocols")
+PROTOCOL_LANGS = ("en", "es", "fr", "zh", "zht", "ru")
+PROTOCOL_LEVELS = ("R", "Z", "A", "M")
+PROTOCOL_MAX_FILE = 256 * 1024
+PROTOCOL_MAX_STEPS = 200
+PROTOCOL_FILE_RE = re.compile(r"^([RZAM])(?:[-_][^/\\]*)?\.txt$", re.IGNORECASE)
+
+
+def _decode_draft(raw):
+    for enc in ("utf-8-sig", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def parse_protocol_text(text, default_lang="zh"):
+    """Parse one TXT file. Returns (steps, warnings).
+
+    A step starts with '## heading'. Following plain lines are the body in
+    the current default language. '@xx.title:' / '@xx.detail:' (or bare
+    'title:' / 'detail:' / 标题: / 正文:) write into a specific language.
+    English is the source of record: if a step has no English text, the
+    default-language text is mirrored into en so other locales still show it.
+    """
+    steps, warnings = [], []
+    lang = default_lang
+    cur = None
+
+    def close():
+        if cur is None:
+            return
+        if not any(v.strip() for v in cur["title"].values()):
+            warnings.append("跳过一个没有标题的步骤（第 %d 行）" % cur["line"])
+            return
+        if any(len(cur["detail"][k]) > 20000 for k in PROTOCOL_LANGS):
+            warnings.append("第 %d 行步骤正文过长，已截断" % cur["line"])
+            for k in PROTOCOL_LANGS:
+                cur["detail"][k] = cur["detail"][k][:20000]
+        if not cur["title"]["en"].strip():
+            cur["title"]["en"] = cur["title"].get(lang) or next(
+                (v for v in cur["title"].values() if v.strip()), "")
+        if not cur["detail"]["en"].strip():
+            cur["detail"]["en"] = cur["detail"].get(lang) or next(
+                (v for v in cur["detail"].values() if v.strip()), "")
+        steps.append({"title": cur["title"], "detail": cur["detail"]})
+
+    for lineno, raw_line in enumerate(text.splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(";") or (line.startswith("#") and not line.startswith("##")):
+            continue
+        m = re.match(r"^@lang\s*[:=]?\s*([A-Za-z]+)\s*$", line, re.IGNORECASE)
+        if m:
+            v = m.group(1).lower()
+            if v in PROTOCOL_LANGS:
+                lang = v
+            else:
+                warnings.append("第 %d 行：未知语言代码 %s，已忽略" % (lineno, m.group(1)))
+            continue
+        if line.startswith("##"):
+            close()
+            cur = {
+                "line": lineno,
+                "title": {k: "" for k in PROTOCOL_LANGS},
+                "detail": {k: "" for k in PROTOCOL_LANGS},
+            }
+            head = line[2:].strip()
+            if head:
+                cur["title"][lang] = head
+            continue
+        m = re.match(
+            r"^@?([A-Za-z]{2,4})\.(title|detail|标题|正文)\s*[:：]\s*(.*)$", line)
+        if m and cur is not None:
+            code, field, value = m.group(1).lower(), m.group(2), m.group(3)
+            if code not in PROTOCOL_LANGS:
+                warnings.append("第 %d 行：未知语言代码 %s，已忽略" % (lineno, m.group(1)))
+                continue
+            is_title = field in ("title", "标题")
+            bucket = cur["title"] if is_title else cur["detail"]
+            bucket[code] = (bucket[code] + "\n" + value) if bucket[code] else value
+            continue
+        m = re.match(r"^(title|detail|标题|正文)\s*[:：]\s*(.*)$", line, re.IGNORECASE)
+        if m and cur is not None:
+            field, value = m.group(1).lower(), m.group(2)
+            bucket = cur["title"] if field in ("title", "标题") else cur["detail"]
+            bucket[lang] = (bucket[lang] + "\n" + value) if bucket[lang] else value
+            continue
+        if cur is not None:
+            cur["detail"][lang] = (cur["detail"][lang] + "\n" + line) if cur["detail"][lang] else line
+        else:
+            warnings.append("第 %d 行出现在第一个 ## 标题之前，已忽略" % lineno)
+    close()
+    return steps, warnings
+
+
+def read_protocol_drafts():
+    """Scan protocols/ and return {levels, files, errors, warnings}.
+    Pure read: no filesystem writes, no access to the encrypted register."""
+    out = {
+        "levels": {lv: [] for lv in PROTOCOL_LEVELS},
+        "files": [], "errors": [], "warnings": [], "folder": "protocols"
+    }
+    if not os.path.isdir(PROTOCOL_DIR):
+        out["errors"].append("找不到 protocols 文件夹")
+        return out
+    try:
+        names = sorted(os.listdir(PROTOCOL_DIR))
+    except OSError as exc:
+        out["errors"].append("无法读取 protocols 文件夹：%s" % exc)
+        return out
+    for name in names:
+        m = PROTOCOL_FILE_RE.match(name)
+        if not m:
+            continue
+        lv = m.group(1).upper()
+        full = os.path.join(PROTOCOL_DIR, name)
+        if not os.path.isfile(full):
+            continue
+        try:
+            if os.path.getsize(full) > PROTOCOL_MAX_FILE:
+                out["errors"].append("%s：文件超过 256 KB" % name)
+                continue
+            with open(full, "rb") as f:
+                text = _decode_draft(f.read())
+            steps, warns = parse_protocol_text(text)
+            for w in warns:
+                out["warnings"].append("%s：%s" % (name, w))
+            if len(out["levels"][lv]) + len(steps) > PROTOCOL_MAX_STEPS:
+                out["errors"].append("%s 级步骤超过 %d 个上限" % (lv, PROTOCOL_MAX_STEPS))
+                continue
+            out["levels"][lv].extend(steps)
+            out["files"].append({"name": name, "level": lv, "steps": len(steps)})
+            if not steps:
+                out["warnings"].append("%s：没有解析到步骤，该等级保持不变" % name)
+        except Exception as exc:
+            out["errors"].append("%s：解析失败（%s）" % (name, exc))
+    return out
+
 PAGES = [
     ("Civil Affairs Portal", "/index.html"),
     ("Frontier Inspection", "/border.html"),
@@ -273,6 +420,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _is_api(self):
         return self.path.split("?")[0].startswith("/api/store")
+
+    def _serve_protocol_drafts(self):
+        """Read-only. Drafts are not secrets, but keep them host-only in LAN
+        mode so an enrolled phone cannot enumerate the Chancellery files."""
+        if LAN and not ADMIN_LAN and not is_local_peer(self.client_address[0]):
+            self.send_error(403, "Protocol drafts are host-only")
+            return
+        body = json.dumps(read_protocol_drafts(), ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     # ---- static access control ----------------------------------------
     def _serve_ca(self, kind="crt"):
@@ -304,6 +464,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         raw_path = urlsplit(self.path).path
         path = unquote(raw_path)
+        if path == "/api/protocols":
+            return self._serve_protocol_drafts()
         if not self._is_api():
             if path in ("/ca.pem", "/ca.crt", "/ca.mobileconfig"):
                 if not (TLS and LAN):

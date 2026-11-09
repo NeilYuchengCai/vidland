@@ -1,6 +1,10 @@
 # 运行时产生的本地存档（非源码）
 vidland-data/
 
+# 自行撰写的安检规程草稿（仅保留格式说明）
+protocols/*.txt
+!protocols/格式说明.txt
+
 # 工具/会话数据
 .workbuddy/
 

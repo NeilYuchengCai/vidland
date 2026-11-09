@@ -240,11 +240,74 @@
       REJECTED:'s.rejected', WAITLISTED:'s.waitlisted' }[st] || 's.unknown');
   }
 
+  /* Import R/Z/A/M protocols from plain-text drafts in the protocols folder.
+     The server only parses the TXT files; sealing, sync and the ledger entry
+     all go through Vault.mutate() so the cipher key never leaves this page. */
+  async function importProtocols() {
+    var data;
+    try {
+      var resp = await fetch('api/protocols', { cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      data = await resp.json();
+    } catch (e) {
+      V.toast(t('m.proto.import.fail', { msg: e.message || String(e) }), 'bad');
+      return;
+    }
+    if (data.errors && data.errors.length) {
+      V.toast(t('m.proto.import.fail', { msg: esc(data.errors.join('; ')) }), 'bad');
+      return;
+    }
+    var touched = ['R','Z','A','M'].filter(function (lv) {
+      return (data.levels[lv] || []).length > 0;
+    });
+    if (!touched.length) {
+      V.toast(t('m.proto.import.empty'), 'bad');
+      return;
+    }
+    var total = touched.reduce(function (n, lv) { return n + data.levels[lv].length; }, 0);
+    var useful = (data.files || []).filter(function (f) { return f.steps > 0; });
+    var body = useful.length
+      ? '<div class="notice"><span class="ttl">' + esc(t('m.proto.import.files')) + '</span>' +
+        useful.map(function (f) {
+          return esc(f.name) + ' · ' + esc(f.level) + ' · ' + f.steps;
+        }).join('<br>') + '</div>'
+      : '';
+    body += '<p>' + esc(t('m.proto.import.body', { levels: touched.join(' / '), steps: total })) + '</p>';
+    if (data.warnings && data.warnings.length) {
+      body += '<div class="notice warn"><span class="ttl">' + esc(t('m.proto.import.issues')) + '</span>' +
+        esc(data.warnings.slice(0, 8).join('; ')) + '</div>';
+    }
+    V.confirmDialog(t('m.proto.import.title'), body, function () {
+      var snapshot = JSON.parse(JSON.stringify(data.levels));
+      ['R','Z','A','M'].forEach(function (lv) {
+        snapshot[lv] = (snapshot[lv] || []).map(function (x) {
+          return {
+            id: V.uid('STP'),
+            title: Object.assign({}, x.title),
+            detail: Object.assign({}, x.detail)
+          };
+        });
+      });
+      V.Vault.mutate(function (s) {
+        touched.forEach(function (lv) { s.protocol[lv] = snapshot[lv]; });
+        V.Vault.ledger(s, 'AUTHORITY', 'm.proto.import.ledger');
+      }).then(function () {
+        protoDraft = null;
+        V.toast(t('m.proto.import.ok'), 'good');
+        render();
+      }).catch(function (e) {
+        V.toast(t('m.proto.import.fail', { msg: e.message || String(e) }), 'bad');
+      });
+    });
+  }
+
   function paneProtocol(s) {
     var p = getProto(s);
     var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.securityShort')) + '</div><h2>' + esc(t('m.proto.title')) +
       '</h2><div class="sub">' + esc(t('m.proto.sub')) + '</div></div>' +
-      '<div class="btn-row" style="margin:0"><button class="btn gold sm" data-act="proto-save">' + esc(t('a.save')) + '</button></div></div><div class="doc-body">';
+      '<div class="btn-row" style="margin:0"><button class="btn secondary sm" data-act="proto-import">' + esc(t('m.proto.import')) +
+      '</button><button class="btn gold sm" data-act="proto-save">' + esc(t('a.save')) + '</button></div></div><div class="doc-body">';
+    h += '<div class="small muted mb">' + esc(t('m.proto.import.hint')) + '</div>';
     h += '<div class="tabs">' + ['R','Z','A','M'].map(function (lv) {
       return '<button data-act="proto-level" data-lv="' + lv + '" class="' + (protoLevel === lv ? 'on' : '') + '">' +
         esc(t('i.level.' + lv)) + ' <span class="count">' + (p[lv] || []).length + '</span></button>';
@@ -684,6 +747,7 @@
         if (j >= 0 && j < arr.length) { var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; }
         render(); break;
       }
+      case 'proto-import': importProtocols(); break;
       case 'proto-save': {
         var snapshot = JSON.parse(JSON.stringify(getProto(lastState)));
         V.Vault.mutate(function (s) {
