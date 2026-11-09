@@ -29,9 +29,13 @@ except Exception:
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / '.workbuddy'
 STATE.mkdir(exist_ok=True)
-PID_FILE = STATE / 'vdl-server.pid'
-LOG_FILE = STATE / 'vdl-server.log'
 PORT = int(os.environ.get('VDL_PORT', '7431'))
+# PID/log files are per-port. A shared file made "stop" on one VDL_PORT
+# kill the recorded PID of a server listening on a different port.
+PID_FILE = STATE / ('vdl-server-%d.pid' % PORT)
+LOG_FILE = STATE / ('vdl-server-%d.log' % PORT)
+LEGACY_PID_FILE = STATE / 'vdl-server.pid'   # written by older releases
+LEGACY_LOG_FILE = STATE / 'vdl-server.log'
 
 
 def tls_on():
@@ -39,8 +43,43 @@ def tls_on():
             or os.environ.get('VDL_TLS', '').strip().lower() in ('1', 'true', 'yes', 'on'))
 
 
+MODE_LABEL = {'http': 'HTTP · 本机模式', 'https': 'HTTPS · 局域网模式'}
+
+
+def _probe(scheme):
+    """Probe one scheme. LAN certs are self-signed, so verification is
+    skipped for this loopback-only check (never for real clients)."""
+    try:
+        ctx = None
+        if scheme == 'https':
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(
+                '%s://127.0.0.1:%d/index.html' % (scheme, PORT),
+                timeout=0.8, context=ctx) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def probe_scheme():
+    """The scheme the RUNNING service actually speaks, or None.
+
+    A server started earlier with [7] keeps serving HTTPS even after a new
+    console is opened with no VDL_LAN set. Guessing from this process's own
+    environment made a healthy server look dead; probe both schemes instead.
+    """
+    preferred = 'https' if tls_on() else 'http'
+    for scheme in (preferred, 'https' if preferred == 'http' else 'http'):
+        if _probe(scheme):
+            return scheme
+    return None
+
+
 def base_url():
-    return '%s://127.0.0.1:%d' % ('https' if tls_on() else 'http', PORT)
+    live = probe_scheme()
+    return '%s://127.0.0.1:%d' % (live or ('https' if tls_on() else 'http'), PORT)
 PAGES = [
     ('Civil Affairs Portal', '/index.html'),
     ('Frontier Inspection',  '/border.html'),
@@ -76,10 +115,12 @@ def port_pids():
 
 
 def recorded_pid():
-    try:
-        return int(PID_FILE.read_text(encoding='utf-8').strip())
-    except Exception:
-        return None
+    for f in (PID_FILE, LEGACY_PID_FILE if PORT == 7431 else PID_FILE):
+        try:
+            return int(f.read_text(encoding='utf-8').strip())
+        except Exception:
+            pass
+    return None
 
 
 def pid_alive(pid):
@@ -93,45 +134,47 @@ def pid_alive(pid):
 
 
 def http_ok():
-    try:
-        # A locally generated certificate is not in any trust store; only
-        # skip verification for our own loopback probe, never for clients.
-        ctx = None
-        if tls_on():
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(base_url() + '/index.html', timeout=1.2,
-                                    context=ctx) as r:
-            return r.status == 200
-    except Exception:
-        return False
+    return probe_scheme() is not None
 
 
 def urls():
-    return '\n'.join('    %-24s %s%s' % (name, base_url(), path) for name, path in PAGES)
+    base = base_url()
+    return '\n'.join('    %-24s %s%s' % (name, base, path) for name, path in PAGES)
 
 
 def status():
     pids = port_pids()
     rp = recorded_pid()
+    live = probe_scheme()
     print('  指定端口        : %d (VDL_PORT 可覆盖)' % PORT)
     print('  端口监听进程    : %s' % (', '.join(map(str, pids)) if pids else '无'))
     print('  记录的服务器 PID: %s%s' % (rp if rp else '无',
           '  (进程仍在)' if rp and pid_alive(rp) else '  (已退出)' if rp else ''))
-    print('  HTTP 探测       : %s' % ('200 OK · 服务可用' if http_ok() else '不可达'))
+    print('  运行模式        : %s' % (MODE_LABEL[live] if live else '未运行'))
+    print('  服务探测        : %s' % ('200 OK · 服务可用' if live else '不可达'))
     print('  四个终端地址    :')
     print(urls())
+    if live == 'https':
+        print('  提示：当前是局域网模式，请按 HTTPS 地址访问；'
+              '要回到本机 HTTP 模式可先选 [2] 停止，再选 [1] 启动。')
 
 
 def start():
     pids = port_pids()
     if pids:
+        live = probe_scheme()
+        wanted = 'https' if tls_on() else 'http'
         print('  端口 %d 已被占用：PID %s' % (PORT, ', '.join(map(str, pids))))
-        if http_ok():
-            print('  政务服务似乎已在运行，无需重复启动。')
-        else:
-            print('  该进程不是可用的政务服务，请先选 [2] 停止。')
+        if live:
+            print('  政务服务已在运行（%s），无需重复启动。' % MODE_LABEL[live])
+            print('  正确地址：%s/index.html' % base_url())
+            if live != wanted:
+                print('  注意：本次命令想要的是 %s；'
+                      '如需切换，请先选 [2] 停止，再重新启动。' % MODE_LABEL[wanted])
+            print(urls())
+            return True
+        print('  端口被占用但服务无响应（可能是残留进程或非本项目服务），'
+              '请先选 [2] 停止后再启动。')
         return False
     try:
         log = LOG_FILE.open('a', encoding='utf-8')
@@ -154,11 +197,12 @@ def start():
     except Exception as e:
         print('  启动失败：%s' % e)
         return False
+    expected = 'https' if tls_on() else 'http'
     for _ in range(24):
-        if http_ok():
+        if _probe(expected):
             break
         time.sleep(0.25)
-    if http_ok():
+    if _probe(expected):
         print('  ✓ 政务服务已启动 · PID %d · 端口 %d（后台无窗口运行）' % (p.pid, PORT))
         print(urls())
         return True
@@ -167,17 +211,20 @@ def start():
 
 
 def stop(confirm=True):
+    # Only ever touch PIDs that are actually LISTENING on THIS port. The
+    # recorded PID is a hint for display, never a kill target on its own.
     pids = set(port_pids())
     rp = recorded_pid()
-    if rp and pid_alive(rp):
-        pids.add(rp)
     if not pids:
         print('  当前没有运行中的政务服务。')
-        try:
-            PID_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
+        for f in (PID_FILE, LEGACY_PID_FILE if PORT == 7431 else PID_FILE):
+            try:
+                f.unlink(missing_ok=True)
+            except Exception:
+                pass
         return True
+    if rp and rp not in pids:
+        print('  提示：记录的 PID %d 未在本端口监听，已忽略（不终止）。' % rp)
     print('  将终止以下进程（仅限端口 %d）：PID %s' %
           (PORT, ', '.join(map(str, sorted(pids)))))
     if confirm:
@@ -193,10 +240,11 @@ def stop(confirm=True):
                            capture_output=True, text=True,
                            encoding='utf-8', errors='replace')
         print('  PID %-7d %s' % (pid, '已终止' if r.returncode == 0 else '未能终止（可能已退出）'))
-    try:
-        PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    for f in (PID_FILE, LEGACY_PID_FILE if PORT == 7431 else PID_FILE):
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:
+            pass
     time.sleep(0.5)
     left = port_pids()
     print('  端口状态：%s' % ('仍被占用 %s' % left if left else '已释放'))
@@ -210,23 +258,28 @@ def restart():
 
 
 def open_pages():
-    if not http_ok():
+    live = probe_scheme()
+    if not live:
         print('  服务尚未就绪，请先选 [1] 启动。')
         return
+    base = '%s://127.0.0.1:%d' % (live, PORT)
     for name, path in PAGES:
-        webbrowser.open_new_tab(base_url() + path)
+        webbrowser.open_new_tab(base + path)
     print('  已在默认浏览器打开四个终端标签页。')
 
 
 def view_log():
-    if not LOG_FILE.exists():
+    log = LOG_FILE
+    if not log.exists() and PORT == 7431 and LEGACY_LOG_FILE.exists():
+        log = LEGACY_LOG_FILE
+    if not log.exists():
         print('  暂无日志（服务尚未通过本控制台启动过）。')
         return
-    lines = LOG_FILE.read_text(encoding='utf-8', errors='replace').splitlines()
+    lines = log.read_text(encoding='utf-8', errors='replace').splitlines()
     if not lines:
         print('  日志为空。')
         return
-    print('  --- 最后 20 行 · %s ---' % LOG_FILE)
+    print('  --- 最后 20 行 · %s ---' % log)
     for ln in lines[-20:]:
         print('  ' + ln)
 
