@@ -8,7 +8,10 @@ unrelated Python or browser process.
 
     python quickstart.py              -> looping menu
     python quickstart.py start        -> one-shot commands
-    python quickstart.py stop | restart | status | open | log | lan
+    python quickstart.py stop | restart | status | open | log | lan | local
+
+'lan'   -> HTTPS on 0.0.0.0 for phones (also starts the CA enrolment port)
+'local' -> one-shot switch back to plain HTTP on 127.0.0.1
 """
 import os
 import ssl
@@ -159,18 +162,27 @@ def status():
               '要回到本机 HTTP 模式可先选 [2] 停止，再选 [1] 启动。')
 
 
-def start():
+def start(mode=None):
+    """mode: 'lan' (HTTPS / 0.0.0.0), 'local' (HTTP / loopback), or None
+    to infer from this process's environment. The child gets an explicit
+    environment so a previous 'lan' choice can never leak into a later
+    'start' or 'restart' in the same console session.
+    """
+    effective = mode or ('lan' if tls_on() else 'local')
+    expected = 'https' if effective == 'lan' else 'http'
     pids = port_pids()
     if pids:
         live = probe_scheme()
-        wanted = 'https' if tls_on() else 'http'
         print('  端口 %d 已被占用：PID %s' % (PORT, ', '.join(map(str, pids))))
         if live:
             print('  政务服务已在运行（%s），无需重复启动。' % MODE_LABEL[live])
             print('  正确地址：%s/index.html' % base_url())
-            if live != wanted:
-                print('  注意：本次命令想要的是 %s；'
-                      '如需切换，请先选 [2] 停止，再重新启动。' % MODE_LABEL[wanted])
+            if live != expected:
+                print('  当前是 %s，与本次要启动的 %s 不同，未作改动。' %
+                      (MODE_LABEL[live], MODE_LABEL[expected]))
+                print('  切换模式请选 [8]（切回本机）或 [7]（切到局域网），'
+                      '这两个命令会先停止旧服务再启动。')
+                return False
             print(urls())
             return True
         print('  端口被占用但服务无响应（可能是残留进程或非本项目服务），'
@@ -178,26 +190,34 @@ def start():
         return False
     try:
         log = LOG_FILE.open('a', encoding='utf-8')
-        log.write('\n--- start %s ---\n' % time.strftime('%Y-%m-%d %H:%M:%S'))
+        log.write('\n--- start %s (%s) ---\n' %
+                  (time.strftime('%Y-%m-%d %H:%M:%S'), effective))
         log.flush()
         flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         breakaway = getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0)
         argv = [sys.executable, str(ROOT / 'serve.py')]
+        child_env = os.environ.copy()
+        # Strip any stale mode flags, then set exactly what this run needs.
+        child_env.pop('VDL_LAN', None)
+        child_env.pop('VDL_TLS', None)
+        if effective == 'lan':
+            child_env['VDL_LAN'] = '1'
+            child_env['VDL_TLS'] = '1'
         try:
             # Detach from the launcher's job so the server survives even if
             # the console that started it is closed.
             p = subprocess.Popen(argv, cwd=str(ROOT), stdout=log,
-                                 stderr=subprocess.STDOUT,
+                                 stderr=subprocess.STDOUT, env=child_env,
                                  creationflags=flags | breakaway)
         except OSError:
             p = subprocess.Popen(argv, cwd=str(ROOT), stdout=log,
-                                 stderr=subprocess.STDOUT, creationflags=flags)
+                                 stderr=subprocess.STDOUT, env=child_env,
+                                 creationflags=flags)
         log.close()
         PID_FILE.write_text(str(p.pid), encoding='utf-8')
     except Exception as e:
         print('  启动失败：%s' % e)
         return False
-    expected = 'https' if tls_on() else 'http'
     for _ in range(24):
         if _probe(expected):
             break
@@ -252,9 +272,29 @@ def stop(confirm=True):
 
 
 def restart():
-    stop(confirm=False)
-    time.sleep(0.4)
-    return start()
+    # Preserve whichever mode is actually running (or the requested env).
+    live = probe_scheme()
+    mode = 'lan' if (live == 'https' or (not live and tls_on())) else 'local'
+    if port_pids():
+        if not stop(confirm=False):
+            return False
+        time.sleep(0.4)
+    return start(mode=mode)
+
+
+def local_start():
+    """One-shot switch back to loopback HTTP. Stops whatever is on the port
+    (no y/N prompt) and starts a plain-HTTP server, so users do not have to
+    chain [2] (which asks for confirmation) and [1]."""
+    if port_pids():
+        if not stop(confirm=False):
+            return False
+        time.sleep(0.4)
+    ok = start(mode='local')
+    if ok:
+        print('  已切回本机模式：%s/index.html' % base_url())
+        print('  四端现在可直接用 http://127.0.0.1:%d/ 打开。' % PORT)
+    return ok
 
 
 def open_pages():
@@ -306,9 +346,16 @@ def lan_start():
             print('  原因：make_cert.py 退出码 %d，未给出更多信息。' % r.returncode)
             print('  可手动运行 python make_cert.py 查看详细输出。')
         return False
-    os.environ['VDL_LAN'] = '1'
-    os.environ['VDL_TLS'] = '1'
-    ok = start()
+    # If a plain-HTTP server is already on the port, stop it first. Otherwise
+    # start() would report "already running" and we would falsely announce
+    # LAN mode while the service is still unreachable from a phone.
+    if port_pids() and probe_scheme() != 'https':
+        if not stop(confirm=False):
+            return False
+        time.sleep(0.4)
+    # Pass the mode explicitly; never mutate this process's environment,
+    # or a later [1]/[3] in the same console would silently stay in LAN mode.
+    ok = start(mode='lan')
     if ok:
         try:
             import socket as _s
@@ -346,7 +393,8 @@ MENU = '''
    [1] 启动服务器          [2] 停止服务器（杀死进程）
    [3] 重启服务器          [4] 查看状态 / 端口占用
    [5] 浏览器打开四个终端   [6] 查看服务器日志
-   [7] 局域网模式（手机）   [0] 退出控制台
+   [7] 局域网模式（手机）   [8] 切回本机模式（HTTP）
+   [0] 退出控制台
 %s''' % (BAR, PORT, BAR, BAR)
 
 
@@ -365,10 +413,12 @@ def dispatch(choice, interactive=True):
         view_log()
     elif choice == '7':
         lan_start()
+    elif choice == '8':
+        local_start()
     elif choice == '0':
         return False
     else:
-        print('  无效选择，请输入 0–7。')
+        print('  无效选择，请输入 0–8。')
     return True
 
 
@@ -376,9 +426,11 @@ def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         alias = {'start': '1', 'stop': '2', 'restart': '3',
-                 'status': '4', 'open': '5', 'log': '6', 'lan': '7'}
+                 'status': '4', 'open': '5', 'log': '6', 'lan': '7',
+                 'local': '8'}
         if cmd not in alias:
-            print('用法: python quickstart.py [start|stop|restart|status|open|log|lan]')
+            print('用法: python quickstart.py '
+                  '[start|stop|restart|status|open|log|lan|local]')
             return 1
         dispatch(alias[cmd], interactive=False)
         return 0

@@ -172,7 +172,19 @@ netsh advfirewall firewall add rule name="Vidland LAN 7431" dir=in action=allow 
 2. 用 **Chrome 或 Edge** 打开 `http://127.0.0.1:7431/index.html`（请走 localhost，不要用 `file://` 直接双击打开）。
 3. 首次进入后点击页面任意位置，按提示选择一个文件夹用于存放存档（建议选项目内的 `vidland-data`），之后存档直接落盘，四端实时同步。
 
-若要在手机等局域网设备上使用，改看上面的「局域网访问」一节：运行 `python quickstart.py lan`，手机通过 `https://` 访问时会自动改用共享的服务端存档（移动端不支持文件夹授权）。
+### 两种模式与一键切换
+
+控制台 `python quickstart.py`（或双击 `quickstart.bat`）的 `[1]`/`[7]`/`[8]` 分别对应：
+
+| 命令 | 菜单 | 模式 | 访问地址 |
+| --- | --- | --- | --- |
+| `python quickstart.py start` | `[1]` | 本机 HTTP | `http://127.0.0.1:7431/index.html` |
+| `python quickstart.py lan` | `[7]` | 局域网 HTTPS | `https://192.168.x.x:7431/index.html` |
+| `python quickstart.py local` | `[8]` | 切回本机 HTTP | `http://127.0.0.1:7431/index.html` |
+
+`[7]` 和 `[8]` 都会**先停掉旧服务再按新模式启动**，无需手动 `[2]` + `[1]`（菜单里的 `[2]` 还需要输入 `y` 确认）。`[3]` 重启会保持当前模式。`[4]` 查看状态会显示实际运行模式和正确地址——新开一个控制台也不会因为环境变量丢失而误报「不可达」。
+
+若要在手机等局域网设备上使用，改看上面的「局域网访问」一节：运行 `python quickstart.py lan`，手机通过 `https://` 访问时会自动改用共享的服务端存档（移动端不支持文件夹授权）。用完想回本机，运行 `python quickstart.py local` 即可。
 
 ## 许可证
 
