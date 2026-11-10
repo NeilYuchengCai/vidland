@@ -34,6 +34,7 @@ Certificates and the encrypted register live under vidland-data/, which is
 git-ignored, so no private key ever enters the repository.
 """
 import datetime
+import hashlib
 import http.server
 import ipaddress
 import json
@@ -79,11 +80,12 @@ TLS_CHAIN_FILE = (FULLCHAIN_FILE if MANAGE_CERT and os.path.isfile(FULLCHAIN_FIL
 CERT_CHECK_SEC = int(os.environ.get("VDL_CERT_CHECK_SEC", "21600"))  # 6h
 RENEW_BELOW_DAYS = 30
 _store_lock = threading.Lock()
+_protocol_lock = threading.Lock()
 
 # Static files the four terminals actually reference. Everything else under
 # ROOT (vidland-data/*.pem, store.json, .git/, *.py ...) is never served.
 PUBLIC_FILES = frozenset({
-    "/index.html", "/border.html", "/interior.html", "/admin.html",
+    "/index.html", "/border.html", "/entry.html", "/interior.html", "/admin.html",
     "/vidland-core.js", "/vidland-i18n.js", "/vidland-store.js",
     "/vidland.css", "/ca.pem", "/ca.crt", "/ca.mobileconfig", "/favicon.ico",
 })
@@ -355,29 +357,47 @@ def parse_protocol_text(text, default_lang="zh"):
     return steps, warnings
 
 
+def _protocol_files():
+    """Sorted (name, level, fullpath) of draft files actually present."""
+    if not os.path.isdir(PROTOCOL_DIR):
+        return []
+    found = []
+    for name in sorted(os.listdir(PROTOCOL_DIR)):
+        m = PROTOCOL_FILE_RE.match(name)
+        if not m:
+            continue
+        full = os.path.join(PROTOCOL_DIR, name)
+        if os.path.isfile(full):
+            found.append((name, m.group(1).upper(), full))
+    return found
+
+
+def protocol_rev():
+    """Fingerprint of every draft file. Cheap enough to poll each second."""
+    h = hashlib.sha256()
+    for name, lv, full in _protocol_files():
+        try:
+            stat = os.stat(full)
+            with open(full, "rb") as f:
+                h.update(f.read())
+            h.update(("\0" + name + "\0" + str(stat.st_mtime_ns)).encode("utf-8"))
+        except OSError:
+            continue
+    return h.hexdigest()[:20]
+
+
 def read_protocol_drafts():
-    """Scan protocols/ and return {levels, files, errors, warnings}.
+    """Scan protocols/ and return {levels, files, errors, warnings, rev}.
     Pure read: no filesystem writes, no access to the encrypted register."""
     out = {
         "levels": {lv: [] for lv in PROTOCOL_LEVELS},
-        "files": [], "errors": [], "warnings": [], "folder": "protocols"
+        "files": [], "errors": [], "warnings": [], "folder": "protocols",
+        "defined": [], "rev": protocol_rev()
     }
     if not os.path.isdir(PROTOCOL_DIR):
         out["errors"].append("找不到 protocols 文件夹")
         return out
-    try:
-        names = sorted(os.listdir(PROTOCOL_DIR))
-    except OSError as exc:
-        out["errors"].append("无法读取 protocols 文件夹：%s" % exc)
-        return out
-    for name in names:
-        m = PROTOCOL_FILE_RE.match(name)
-        if not m:
-            continue
-        lv = m.group(1).upper()
-        full = os.path.join(PROTOCOL_DIR, name)
-        if not os.path.isfile(full):
-            continue
+    for name, lv, full in _protocol_files():
         try:
             if os.path.getsize(full) > PROTOCOL_MAX_FILE:
                 out["errors"].append("%s：文件超过 256 KB" % name)
@@ -392,15 +412,105 @@ def read_protocol_drafts():
                 continue
             out["levels"][lv].extend(steps)
             out["files"].append({"name": name, "level": lv, "steps": len(steps)})
+            if lv not in out["defined"]:
+                out["defined"].append(lv)
             if not steps:
                 out["warnings"].append("%s：没有解析到步骤，该等级保持不变" % name)
         except Exception as exc:
             out["errors"].append("%s：解析失败（%s）" % (name, exc))
     return out
 
+
+def _clean_lang_text(value):
+    """One logical value -> lines that cannot be mistaken for directives."""
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return [l.strip() for l in lines if l.strip()]
+
+
+def serialise_level(lv, steps):
+    """Render steps back into the documented TXT format. Round-trip safe:
+    headings and bodies are emitted as explicit fields so no content line
+    can be mistaken for a directive (@lang, ##, @xx.title ...)."""
+    out = [
+        "# 由政务署中央登记处自动写入；手工修改此文件也会同步回管理端。",
+        "# 每个步骤以 ## 开始，正文用 detail: / @语言.detail: 逐行写出。",
+        "# 等级 " + lv,
+        "@lang zh",
+        "",
+    ]
+    for n, step in enumerate(steps, 1):
+        title = step.get("title") or {}
+        detail = step.get("detail") or {}
+        readable = _clean_lang_text(title.get("zh") or title.get("en") or "")
+        # '## heading' implicitly writes into the file's default language.
+        # Emit it bare and keep every language in explicit fields so the
+        # round-trip is exact for any combination of filled/blank locales.
+        if readable:
+            out.append("# 步骤 %d：%s" % (n, readable[0]))
+        out.append("##")
+        for lg in PROTOCOL_LANGS:
+            for line in _clean_lang_text(title.get(lg)):
+                out.append("@%s.title: %s" % (lg, line))
+        for lg in PROTOCOL_LANGS:
+            for line in _clean_lang_text(detail.get(lg)):
+                out.append("@%s.detail: %s" % (lg, line))
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def write_protocol_drafts(payload):
+    """Write one level's steps back to its TXT file.
+
+    Only flat files inside protocols/ are touched. An optimistic 'baseRev'
+    prevents the Authority from silently overwriting an external edit that
+    happened while the page was open.
+    """
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "无效的请求体"}
+    levels = payload.get("levels")
+    if not isinstance(levels, dict):
+        return {"ok": False, "error": "缺少 levels"}
+    base = payload.get("baseRev")
+    current = protocol_rev()
+    if base and base != current:
+        return {"ok": False, "conflict": True,
+                "error": "protocols 文件夹已被外部修改，请刷新后重试"}
+    os.makedirs(PROTOCOL_DIR, exist_ok=True)
+    written = []
+    existing = {}
+    for name, lv, full in _protocol_files():
+        existing.setdefault(lv, []).append(full)
+    for lv in PROTOCOL_LEVELS:
+        if lv not in levels:
+            continue
+        steps = levels[lv]
+        if not isinstance(steps, list) or len(steps) > PROTOCOL_MAX_STEPS:
+            return {"ok": False, "error": "%s 级步骤数量无效" % lv}
+        for step in steps:
+            if not isinstance(step, dict):
+                return {"ok": False, "error": "%s 级存在无效步骤" % lv}
+        targets = existing.get(lv)
+        if not targets:
+            targets = [os.path.join(PROTOCOL_DIR, lv + ".txt")]
+        # One canonical file per level; remove redundant same-level files so
+        # a later scan cannot merge duplicates back into the protocol.
+        for extra in targets[1:]:
+            try:
+                os.remove(extra)
+            except OSError:
+                pass
+        target = targets[0]
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(serialise_level(lv, steps))
+        os.replace(tmp, target)
+        written.append(os.path.basename(target))
+    return {"ok": True, "written": written, "rev": protocol_rev()}
+
 PAGES = [
     ("Civil Affairs Portal", "/index.html"),
     ("Frontier Inspection", "/border.html"),
+    ("Frontier Admission Check", "/entry.html"),
     ("Interior Inspection", "/interior.html"),
     ("Chancellery Authority", "/admin.html"),
 ]
@@ -421,14 +531,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _is_api(self):
         return self.path.split("?")[0].startswith("/api/store")
 
+    def _protocol_host_allowed(self):
+        return (not LAN or ADMIN_LAN or is_local_peer(self.client_address[0]))
+
     def _serve_protocol_drafts(self):
         """Read-only. Drafts are not secrets, but keep them host-only in LAN
         mode so an enrolled phone cannot enumerate the Chancellery files."""
-        if LAN and not ADMIN_LAN and not is_local_peer(self.client_address[0]):
+        if not self._protocol_host_allowed():
             self.send_error(403, "Protocol drafts are host-only")
             return
         body = json.dumps(read_protocol_drafts(), ensure_ascii=False).encode("utf-8")
         self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _write_protocol_drafts(self):
+        """Authority-only write-back of protocol drafts to protocols/."""
+        if not self._protocol_host_allowed():
+            self.send_error(403, "Protocol drafts are host-only")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length > 1024 * 1024:
+                raise ValueError("request too large")
+            raw = self.rfile.read(length) if length else b""
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception as exc:
+            payload = {}
+            result = {"ok": False, "error": "请求解析失败：%s" % exc}
+        else:
+            with _protocol_lock:
+                result = write_protocol_drafts(payload)
+        code = 200 if result.get("ok") else 409 if result.get("conflict") else 400
+        body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -477,8 +615,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not is_public_static(path):
                 self.send_error(404, "Not found")
                 return
-            if path == "/admin.html" and LAN and not ADMIN_LAN and not is_local_peer(self.client_address[0]):
-                self.send_error(403, "Authority terminal is host-only")
+            # Both the Authority terminal and the admission-check station
+            # expose full personal particulars from the central register.
+            if path in ("/admin.html", "/entry.html") and LAN and not ADMIN_LAN \
+                    and not is_local_peer(self.client_address[0]):
+                self.send_error(403, "This terminal is host-only")
                 return
             return super().do_GET()
         path = self.path.split("?")[0]
@@ -545,10 +686,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        path = self.path.split("?")[0]
+        if path == "/api/protocols":
+            return self._write_protocol_drafts()
         if not self._is_api():
             self.send_error(405)
             return
-        path = self.path.split("?")[0]
         if path == "/api/store/reset":
             with _store_lock:
                 obj = _read_store()
@@ -763,7 +906,7 @@ def main():
         ca_srv = start_ca_host(tls_ctx)
     print("=" * 66)
     print("  GRAND DUCHY OF VIDLAND · Chancellery sealed-channel host")
-    print("  Origin: %s   (all four terminals share this origin)" % base)
+    print("  Origin: %s   (all terminals share this origin)" % base)
     print("  Transport: %s   Bound: %s:%d" %
           ("HTTPS / TLS" if TLS else "plain HTTP (loopback only)", HOST, PORT))
     if MANAGE_CERT:

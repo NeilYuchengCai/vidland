@@ -54,6 +54,18 @@ const TERMINALS = [
       <path d="M256 238 L272 262 L256 286 L240 262 Z" fill="${GOLD}"/>`
   },
   {
+    id: 'entry', file: 'entry.html', name: '维兰德公国 · 入境核验处', short: '入境核验',
+    ribbon: 'VIDLAND',
+    emblem: `
+      <rect x="194" y="182" width="124" height="150" rx="6" fill="none" stroke="${GOLD}"
+            stroke-width="9" stroke-linejoin="round"/>
+      <path d="M216 216 H296 M216 240 H296 M216 264 H272" stroke="${LIGHT}"
+            stroke-width="6" stroke-linecap="round" opacity=".85"/>
+      <circle cx="256" cy="300" r="20" fill="none" stroke="${GOLD}" stroke-width="7"/>
+      <path d="M246 300 L254 308 L268 292" fill="none" stroke="${LIGHT}"
+            stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>`
+  },
+  {
     id: 'admin', file: 'admin.html', name: '维兰德公国 · 政务署中央登记处', short: '中央登记',
     ribbon: 'VIDLAND',
     emblem: `

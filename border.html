@@ -46,6 +46,14 @@
 
   <div id="runner"></div>
 
+  <div class="doc" id="entry-module">
+    <div class="doc-head"><div><div class="kicker" id="em-kicker"></div><h2 id="em-title"></h2>
+      <div class="sub" id="em-sub"></div></div>
+      <a class="btn gold sm" id="em-link" href="entry.html"></a></div>
+    <div class="doc-body"><div class="small" id="em-body"></div></div>
+    <div class="doc-foot"><span id="em-foot"></span><span class="docnum">ENTRY / ADMISSION</span></div>
+  </div>
+
   <div class="doc">
     <div class="doc-head"><div><div class="kicker" id="ch-kicker"></div><h3 id="ch-title"></h3></div></div>
     <div class="doc-body"><div class="small" id="ch-body"></div></div>
@@ -70,6 +78,12 @@
     document.getElementById('lv-code').textContent = 'LEVEL R';
     document.getElementById('lv-desc').textContent = t('i.level.R.desc');
     document.getElementById('lv-foot').textContent = t('g.secure');
+    document.getElementById('em-kicker').textContent = t('g.securityShort');
+    document.getElementById('em-title').textContent = t('e.title');
+    document.getElementById('em-sub').textContent = t('e.entryModuleSub');
+    document.getElementById('em-body').textContent = t('e.navNote');
+    document.getElementById('em-link').textContent = t('e.openModule');
+    document.getElementById('em-foot').textContent = t('g.secure');
     document.getElementById('ch-kicker').textContent = t('g.chancelleryShort');
     document.getElementById('ch-title').textContent = t('g.secure');
     document.getElementById('ch-body').textContent = t('p.status.hint');

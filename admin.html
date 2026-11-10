@@ -130,6 +130,8 @@
     try { s = await V.Vault.state(); } catch (e) { s = V.Vault.blankState(); }
     if (my !== _seq) return;
     lastState = s;
+    /* A silent auto-save must not rebuild the DOM under an active caret. */
+    if (syncSuspend) return;
     document.getElementById('hero-eyebrow').textContent = t('m.hero.eyebrow');
     document.getElementById('hero-title').textContent = t('m.hero.title');
     document.getElementById('hero-lead').textContent = t('m.hero.lead');
@@ -145,6 +147,10 @@
       protocol: paneProtocol, inspections: paneInspections, certs: paneCerts,
       leap: paneLeap, ledger: paneLedger, system: paneSystem
     })[active](s);
+    if (syncStatusText) {
+      var box = document.getElementById('proto-sync');
+      if (box) box.textContent = syncStatusText;
+    }
   }
 
   /* ---------- panes ---------- */
@@ -240,74 +246,200 @@
       REJECTED:'s.rejected', WAITLISTED:'s.waitlisted' }[st] || 's.unknown');
   }
 
-  /* Import R/Z/A/M protocols from plain-text drafts in the protocols folder.
-     The server only parses the TXT files; sealing, sync and the ledger entry
-     all go through Vault.mutate() so the cipher key never leaves this page. */
-  async function importProtocols() {
-    var data;
+  /* ---- Two-way live sync between protocols/*.txt and the sealed register.
+     The server owns the plaintext files; this page owns the cipher key.
+     Every write to the register still goes through Vault.mutate(). ------ */
+  var syncRev = null;          // last file fingerprint we know about
+  var syncBusy = false;        // a poll/pull is in flight
+  var pushBusy = false;        // a push is in flight (independent of polling)
+  var syncSuspend = false;     // suppress re-render while the user is typing
+  var syncDeferred = false;    // an unresolved conflict; wait for manual refresh
+  var pushTimer = null;
+  var syncStatusText = '';     // survives async re-renders
+
+  function editingNow() {
+    var el = document.activeElement;
+    return !!(el && el.dataset && el.dataset.pfield);
+  }
+
+  function syncStatus(text, kind) {
+    syncStatusText = text;
+    var box = document.getElementById('proto-sync');
+    if (box) {
+      box.textContent = text;
+      box.className = 'small mb ' + (kind || 'muted');
+    }
+  }
+
+  async function fetchDrafts() {
+    var r = await fetch('api/protocols', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+
+  function normaliseLevels(levels) {
+    var out = {};
+    ['R','Z','A','M'].forEach(function (lv) {
+      out[lv] = (levels[lv] || []).map(function (x) {
+        return {
+          id: V.uid('STP'),
+          title: Object.assign({}, x.title),
+          detail: Object.assign({}, x.detail)
+        };
+      });
+    });
+    return out;
+  }
+
+  /* File -> register. Silent by default (startup / poll). */
+  async function pullDrafts(data, quiet) {
+    if (!data || !data.levels) return false;
+    var levels = normaliseLevels(data.levels);
+    var defined = data.defined || Object.keys(levels).filter(function (lv) {
+      return (data.levels[lv] || []).length;
+    });
+    if (!defined.length) return false;
+    var snapshot = JSON.parse(JSON.stringify(levels));
+    await V.Vault.mutate(function (s) {
+      defined.forEach(function (lv) { s.protocol[lv] = snapshot[lv]; });
+      V.Vault.ledger(s, 'AUTHORITY', 'm.proto.import.ledger');
+    });
+    protoDraft = null;
+    syncRev = data.rev;
+    if (!quiet) V.toast(t('m.proto.sync.pulled'), 'good');
+    return true;
+  }
+
+  /* Register -> file. Optimistic baseRev prevents clobbering an external edit. */
+  async function pushDrafts(quiet) {
+    if (!protoDraft || pushBusy || syncDeferred) return;
+    pushBusy = true;
+    var levels = JSON.parse(JSON.stringify(protoDraft));
+    ['R','Z','A','M'].forEach(function (lv) {
+      levels[lv] = (levels[lv] || []).map(function (x) {
+        return { title: Object.assign({}, x.title), detail: Object.assign({}, x.detail) };
+      });
+    });
     try {
-      var resp = await fetch('api/protocols', { cache: 'no-store' });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      data = await resp.json();
+      var r = await fetch('api/protocols', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseRev: syncRev, levels: levels })
+      });
+      var res = await r.json();
+      if (!res.ok) {
+        if (res.conflict) {
+          syncDeferred = true;
+          syncStatus(t('m.proto.sync.conflict'), '');
+          V.toast(t('m.proto.sync.conflict'), 'bad');
+        } else {
+          V.toast(t('m.proto.import.fail', { msg: res.error || '' }), 'bad');
+        }
+        return;
+      }
+      syncRev = res.rev;
+      if (!quiet) syncStatus(t('m.proto.sync.pushed'), '');
+    } catch (e) {
+      syncStatus(t('m.proto.sync.off'), '');
+    } finally {
+      pushBusy = false;
+    }
+  }
+
+  async function pollDrafts(force) {
+    if (syncBusy || pushBusy || (!force && editingNow())) return;
+    if (syncDeferred && !force) return;     // conflict needs a manual refresh
+    var data;
+    try { data = await fetchDrafts(); }
+    catch (e) { syncStatus(t('m.proto.sync.off'), ''); return; }
+    if (data.errors && data.errors.length) {
+      syncStatus(t('m.proto.import.issues') + '：' + data.errors[0], '');
+      return;
+    }
+    if (data.rev === syncRev) { syncDeferred = false; return; }
+    syncBusy = true;
+    try {
+      await pullDrafts(data, false);
+      render();
+      syncStatus(t('m.proto.sync.on'), '');
     } catch (e) {
       V.toast(t('m.proto.import.fail', { msg: e.message || String(e) }), 'bad');
-      return;
+    } finally {
+      syncBusy = false;
     }
-    if (data.errors && data.errors.length) {
-      V.toast(t('m.proto.import.fail', { msg: esc(data.errors.join('; ')) }), 'bad');
-      return;
-    }
-    var touched = ['R','Z','A','M'].filter(function (lv) {
-      return (data.levels[lv] || []).length > 0;
-    });
-    if (!touched.length) {
-      V.toast(t('m.proto.import.empty'), 'bad');
-      return;
-    }
-    var total = touched.reduce(function (n, lv) { return n + data.levels[lv].length; }, 0);
-    var useful = (data.files || []).filter(function (f) { return f.steps > 0; });
-    var body = useful.length
-      ? '<div class="notice"><span class="ttl">' + esc(t('m.proto.import.files')) + '</span>' +
-        useful.map(function (f) {
-          return esc(f.name) + ' · ' + esc(f.level) + ' · ' + f.steps;
-        }).join('<br>') + '</div>'
-      : '';
-    body += '<p>' + esc(t('m.proto.import.body', { levels: touched.join(' / '), steps: total })) + '</p>';
-    if (data.warnings && data.warnings.length) {
-      body += '<div class="notice warn"><span class="ttl">' + esc(t('m.proto.import.issues')) + '</span>' +
-        esc(data.warnings.slice(0, 8).join('; ')) + '</div>';
-    }
-    V.confirmDialog(t('m.proto.import.title'), body, function () {
-      var snapshot = JSON.parse(JSON.stringify(data.levels));
-      ['R','Z','A','M'].forEach(function (lv) {
-        snapshot[lv] = (snapshot[lv] || []).map(function (x) {
-          return {
-            id: V.uid('STP'),
-            title: Object.assign({}, x.title),
-            detail: Object.assign({}, x.detail)
-          };
-        });
-      });
-      V.Vault.mutate(function (s) {
-        touched.forEach(function (lv) { s.protocol[lv] = snapshot[lv]; });
-        V.Vault.ledger(s, 'AUTHORITY', 'm.proto.import.ledger');
-      }).then(function () {
-        protoDraft = null;
-        V.toast(t('m.proto.import.ok'), 'good');
-        render();
-      }).catch(function (e) {
-        V.toast(t('m.proto.import.fail', { msg: e.message || String(e) }), 'bad');
-      });
-    });
   }
+
+  async function initSync() {
+    var data;
+    try { data = await fetchDrafts(); }
+    catch (e) { syncStatus(t('m.proto.sync.off'), ''); }
+    if (!data) return;
+    syncRev = data.rev;
+    if (data.errors && data.errors.length) {
+      syncStatus(t('m.proto.import.issues') + '：' + data.errors[0], '');
+    } else {
+      var defined = data.defined || [];
+      if (defined.length) {
+        syncBusy = true;
+        try { await pullDrafts(data, true); render(); } catch (e) {}
+        finally { syncBusy = false; }
+      }
+      syncStatus(t('m.proto.sync.on'), '');
+    }
+    setInterval(pollDrafts, 2000);
+  }
+
+  /* Manual refresh, also used to resolve a conflict. */
+  async function refreshSync() {
+    var data;
+    try { data = await fetchDrafts(); }
+    catch (e) { V.toast(t('m.proto.sync.off'), 'bad'); return; }
+    if (data.errors && data.errors.length) {
+      V.toast(t('m.proto.import.fail', { msg: data.errors.join('; ') }), 'bad');
+      return;
+    }
+    syncRev = data.rev; syncDeferred = false;
+    if (!await pullDrafts(data, true)) { V.toast(t('m.proto.import.empty'), 'bad'); return; }
+    render();
+    syncStatus(t('m.proto.sync.on'), '');
+    V.toast(t('m.proto.sync.pulled'), 'good');
+  }
+
+  /* Debounced auto-save: every edit reaches both the sealed register and
+     the TXT files without a manual click. */
+  async function flushPush() {
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
+    syncSuspend = true;
+    var snapshot = JSON.parse(JSON.stringify(getProto(lastState)));
+    try {
+      await V.Vault.mutate(function (s) {
+        ['R','Z','A','M'].forEach(function (lv) { s.protocol[lv] = snapshot[lv]; });
+        V.Vault.ledger(s, 'AUTHORITY', 'm.proto.saved');
+      });
+      await pushDrafts(true);
+      syncStatus(t('m.proto.sync.pushed'), '');
+    } catch (e) {
+      /* keep the in-memory draft; the next poll/save retries */
+    } finally {
+      syncSuspend = false;
+    }
+  }
+
+  function schedulePush() {
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(function () { flushPush(); }, 700);
+  }
+
+  function importProtocols() { refreshSync(); }
 
   function paneProtocol(s) {
     var p = getProto(s);
     var h = '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.securityShort')) + '</div><h2>' + esc(t('m.proto.title')) +
       '</h2><div class="sub">' + esc(t('m.proto.sub')) + '</div></div>' +
-      '<div class="btn-row" style="margin:0"><button class="btn secondary sm" data-act="proto-import">' + esc(t('m.proto.import')) +
+      '<div class="btn-row" style="margin:0"><button class="btn secondary sm" data-act="proto-import">' + esc(t('m.proto.sync.refresh')) +
       '</button><button class="btn gold sm" data-act="proto-save">' + esc(t('a.save')) + '</button></div></div><div class="doc-body">';
-    h += '<div class="small muted mb">' + esc(t('m.proto.import.hint')) + '</div>';
+    h += '<div class="small muted mb">' + esc(t('m.proto.sync.hint')) + '</div>';
+    h += '<div class="small muted mb" id="proto-sync">◈ ' + esc(t('m.proto.sync.checking')) + '</div>';
     h += '<div class="tabs">' + ['R','Z','A','M'].map(function (lv) {
       return '<button data-act="proto-level" data-lv="' + lv + '" class="' + (protoLevel === lv ? 'on' : '') + '">' +
         esc(t('i.level.' + lv)) + ' <span class="count">' + (p[lv] || []).length + '</span></button>';
@@ -739,13 +871,13 @@
       case 'proto-add': {
         var p = getProto(lastState);
         p[protoLevel].push({ id: V.uid('STP'), title: {}, detail: {} });
-        render(); break;
+        render(); schedulePush(); break;
       }
-      case 'proto-del': { getProto(lastState)[protoLevel].splice(+el.dataset.i, 1); render(); break; }
+      case 'proto-del': { getProto(lastState)[protoLevel].splice(+el.dataset.i, 1); render(); schedulePush(); break; }
       case 'proto-up': case 'proto-down': {
         var arr = getProto(lastState)[protoLevel], i = +el.dataset.i, j = act === 'proto-up' ? i - 1 : i + 1;
         if (j >= 0 && j < arr.length) { var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; }
-        render(); break;
+        render(); schedulePush(); break;
       }
       case 'proto-import': importProtocols(); break;
       case 'proto-save': {
@@ -753,7 +885,10 @@
         V.Vault.mutate(function (s) {
           ['R','Z','A','M'].forEach(function (lv) { s.protocol[lv] = snapshot[lv]; });
           V.Vault.ledger(s, 'AUTHORITY', 'm.proto.saved');
-        }).then(function () { V.toast(t('m.proto.saved'), 'good'); render(); });
+        }).then(function () {
+          pushDrafts(true);
+          V.toast(t('m.proto.saved'), 'good'); render();
+        });
         break;
       }
       case 'leap-direct': {
@@ -815,13 +950,26 @@
     }
   });
 
-  /* Protocol editor: keep the in-memory draft current without re-rendering. */
+  /* Protocol editor: keep the in-memory draft current without re-rendering,
+     then auto-save to the sealed register and the TXT files. */
   document.addEventListener('input', function (e) {
     var k = e.target.dataset && e.target.dataset.pfield;
     if (!k || !protoDraft) return;
     var parts = k.split('|');
     var st = protoDraft[protoLevel].find(function (x) { return x.id === parts[0]; });
-    if (st) st[parts[2]][parts[1]] = e.target.value;
+    if (st) { st[parts[2]][parts[1]] = e.target.value; schedulePush(); }
+  });
+  /* Apply any external TXT change that arrived while a caret was active. */
+  document.addEventListener('focusout', function (e) {
+    if (!(e.target && e.target.dataset && e.target.dataset.pfield)) return;
+    if (syncDeferred) return;
+    /* Flush a pending auto-save first, otherwise an external change polled
+       right after blur could overwrite keystrokes that never reached disk. */
+    if (pushTimer) {
+      flushPush().then(function () { setTimeout(pollDrafts, 60); });
+    } else {
+      setTimeout(pollDrafts, 60);
+    }
   });
 
   /* Oath confirmation appears in the Inspections pane when a summons is taken. */
@@ -845,6 +993,7 @@
   };
 
   render();
+  initSync();
 })();
 </script>
 </body>

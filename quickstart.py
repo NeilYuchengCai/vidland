@@ -99,6 +99,7 @@ def base_url():
 PAGES = [
     ('Civil Affairs Portal', '/index.html'),
     ('Frontier Inspection',  '/border.html'),
+    ('Frontier Admission',   '/entry.html'),
     ('Interior Inspection',  '/interior.html'),
     ('Chancellery Authority','/admin.html'),
 ]
@@ -168,7 +169,7 @@ def status():
           '  (进程仍在)' if rp and pid_alive(rp) else '  (已退出)' if rp else ''))
     print('  运行模式        : %s' % (MODE_LABEL[live] if live else '未运行'))
     print('  服务探测        : %s' % ('200 OK · 服务可用' if live else '不可达'))
-    print('  四个终端地址    :')
+    print('  各终端地址      :')
     print(urls())
     if live == 'https':
         print('  提示：当前是局域网模式，请按 HTTPS 地址访问；'
@@ -304,9 +305,11 @@ def restart():
 
 
 def local_start():
-    """One-shot switch back to loopback HTTP. Stops whatever is on the port
-    (no y/N prompt) and starts a plain-HTTP server, so users do not have to
-    chain [2] (which asks for confirmation) and [1]."""
+    """One-shot switch back to loopback HTTP. Idempotent when already there."""
+    live = probe_scheme()
+    if live == 'http':
+        print('  本机模式已在运行，无需重启：%s/index.html' % base_url())
+        return True
     if port_pids():
         if not stop(confirm=False):
             return False
@@ -326,7 +329,7 @@ def open_pages():
     base = '%s://127.0.0.1:%d' % (live, PORT)
     for name, path in PAGES:
         webbrowser.open_new_tab(base + path)
-    print('  已在默认浏览器打开四个终端标签页。')
+    print('  已在默认浏览器打开各终端标签页。')
 
 
 def view_log():
@@ -409,51 +412,51 @@ def lan_start():
 MENU = '''
 %s
   GRAND DUCHY OF VIDLAND  ·  政务系统快捷控制台
-  端口 %d  |  四端必须同源访问  |  仅操作本端口进程
+  端口 %d  |  各终端必须同源访问  |  仅操作本端口进程
 %s
-   [1] 启动服务器          [2] 停止服务器（杀死进程）
-   [3] 重启服务器          [4] 查看状态 / 端口占用
-   [5] 浏览器打开四个终端   [6] 查看服务器日志
-   [7] 局域网模式（手机）   [8] 切回本机模式（HTTP）
-   [0] 退出控制台
+   [1] 启动 / 切回本机模式（HTTP）   [2] 局域网模式（手机 · HTTPS）
+   [3] 停止服务器                    [4] 查看状态
+   [5] 浏览器打开各终端              [0] 退出
 %s''' % (BAR, PORT, BAR, BAR)
 
+# CLI names are kept for scripts/README; they are intentionally richer than
+# the menu. Menu numbers map to the same actions below.
+ACTIONS = {
+    'local':   lambda confirm: local_start(),
+    'lan':     lambda confirm: lan_start(),
+    'stop':    lambda confirm: stop(confirm=confirm),
+    'status':  lambda confirm: status(),
+    'open':    lambda confirm: open_pages(),
+    'restart': lambda confirm: restart(),
+    'log':     lambda confirm: view_log(),
+    'start':   lambda confirm: start(),
+}
+MENU_ALIAS = {'1': 'local', '2': 'lan', '3': 'stop',
+              '4': 'status', '5': 'open', '0': 'exit'}
+CLI_ALIAS = {
+    'start': 'start', 'stop': 'stop', 'restart': 'restart',
+    'status': 'status', 'open': 'open', 'log': 'log',
+    'lan': 'lan', 'local': 'local'
+}
 
-def dispatch(choice, interactive=True):
-    if choice == '1':
-        start()
-    elif choice == '2':
-        stop(confirm=interactive)
-    elif choice == '3':
-        restart()
-    elif choice == '4':
-        status()
-    elif choice == '5':
-        open_pages()
-    elif choice == '6':
-        view_log()
-    elif choice == '7':
-        lan_start()
-    elif choice == '8':
-        local_start()
-    elif choice == '0':
+
+def dispatch(action, interactive=True):
+    if action == 'exit':
         return False
-    else:
-        print('  无效选择，请输入 0–8。')
+    fn = ACTIONS.get(action)
+    if fn:
+        fn(interactive)
     return True
 
 
 def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
-        alias = {'start': '1', 'stop': '2', 'restart': '3',
-                 'status': '4', 'open': '5', 'log': '6', 'lan': '7',
-                 'local': '8'}
-        if cmd not in alias:
+        if cmd not in CLI_ALIAS:
             print('用法: python quickstart.py '
                   '[start|stop|restart|status|open|log|lan|local]')
             return 1
-        dispatch(alias[cmd], interactive=False)
+        dispatch(CLI_ALIAS[cmd], interactive=False)
         return 0
     print(MENU)
     while True:
@@ -462,7 +465,10 @@ def main():
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if not dispatch(choice):
+        action = MENU_ALIAS.get(choice)
+        if not action:
+            print('  无效选择，请输入 0–5。')
+        elif not dispatch(action):
             break
         try:
             input('\n  按回车返回菜单…')

@@ -1644,11 +1644,13 @@
   var PAGES = [
     { id: 'portal',   key: 'g.portalShort' },
     { id: 'border',   key: 'g.borderShort' },
+    { id: 'entry',    key: 'g.entryShort' },
     { id: 'interior', key: 'g.interiorShort' },
     { id: 'admin',    key: 'g.authorityShort' }
   ];
   var TERMINAL_NAME = {
-    portal: 'g.portal', border: 'g.border', interior: 'g.interior', admin: 'g.authority'
+    portal: 'g.portal', border: 'g.border', entry: 'g.entry',
+    interior: 'g.interior', admin: 'g.authority'
   };
 
   function mastheadHTML(page) {
@@ -1814,6 +1816,24 @@
       } catch (e) { return Promise.resolve(); }
     }
 
+    /* Inspection quota: the Chancellery issues a pending inspection task for
+       a level, or the subject holds a standing entitlement (citizenship).
+       Without either, the terminal must refuse to start the walk. */
+    function quotaFor(s, ref) {
+      if (!s || !ref || !s.subjects[ref]) return { ok: false, reason: 'unknown' };
+      var pend = ((s.pending || {})[ref] || []).filter(function (p) {
+        return !p.done && levels.indexOf(p.level) >= 0;
+      });
+      if (pend.length) {
+        return { ok: true, level: pend[0].level, purpose: pend[0].purpose, reason: 'task' };
+      }
+      var cred = s.subjects[ref].credential;
+      if (cred === 'CITIZEN') {
+        return { ok: true, level: levels[0], purpose: 'GENERAL', reason: 'citizen' };
+      }
+      return { ok: false, reason: 'noTask' };
+    }
+
     function snapSubject(s, ref) {
       var x = s.subjects[ref];
       if (!x) return null;
@@ -1876,33 +1896,8 @@
       var pending = st.ref && s.pending ? (s.pending[st.ref] || []).filter(function (p) { return !p.done; }) : [];
       var h = '';
 
-      /* --- identity verification --- */
-      h += '<div class="doc"><div class="doc-head"><div><div class="kicker">' + esc(t('g.restricted')) +
-        '</div><h2>' + esc(t(opts.verifyTitleKey || 'i.verify.title')) + '</h2>' +
-        '<div class="sub">' + esc(t('i.verify.sub')) + '</div></div>' +
-        '<span class="badge ' + (st.verified ? 'ok' : 'neutral') + '">' +
-        esc(st.verified ? t('i.verify.ok') : t('a.verify')) + '</span></div><div class="doc-body">';
-      h += '<div class="fields"><div class="field span2"><label>' + esc(t('i.verify.input')) + '</label>' +
-        '<input data-ir="ref" value="' + esc(st.refInput) + '" placeholder="VDL-SUB-XXXX-XXXX-XX" ' +
-        (st.verified ? 'readonly' : '') + '></div>' +
-        '<div class="field"><label>&nbsp;</label><div class="btn-row" style="margin:0">' +
-        '<button class="btn" data-ir="verify">' + esc(t('a.verify')) + '</button>' +
-        (st.verified ? '<button class="btn secondary" data-ir="unverify">' + esc(t('a.clear')) + '</button>' : '') +
-        '</div></div></div>';
-      if (st.ref && !st.verified) h += '<div class="notice bad mt">' + esc(t('i.verify.fail')) + '</div>';
-      if (st.verified && st.subject) {
-        var u = st.subject;
-        h += '<div class="hairline"></div><h4 class="small" style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--navy);margin-bottom:8px">' +
-          esc(t('i.verify.info')) + '</h4><div class="kv">' +
-          [[t('p.file.name'),u.name],[t('p.file.dob'),u.dob],[t('p.file.nationality'),u.nationality],
-           [t('f.passportNo'),u.passportNo],[t('g.subjectRef'),st.ref],[t('f.address'),u.address],
-           [t('i.verify.credential'),u.credentialLabel],[t('cr.code'),u.credentialCode],
-           [t('g.nationalId'),u.nationalId]].map(function (r) {
-            return '<div class="k">' + esc(r[0]) + '</div><div class="v">' + esc(r[1]) + '</div>';
-          }).join('') + '</div>';
-        if (u.credential === 'CITIZEN') h += '<div class="notice good mt">' + esc(t('i.verify.citizenNote')) + '</div>';
-      }
-      h += '</div><div class="doc-foot"><span>' + esc(t('g.secure')) + '</span><span class="docnum">' + esc(page) + ' / ID</span></div></div>';
+      /* Identity attestation is the FIRST checkpoint of the inspection walk,
+         not a separate form. See the auth stage below. */
 
       /* --- level selector --- */
       if (levels.length > 1) {
@@ -1928,22 +1923,28 @@
           '</div></div></div>';
       }
 
-      /* --- runner : sequential checkpoint walk (forward-only; each check is its own station page) --- */
+      /* --- runner : identity attestation is checkpoint 1, prescribed steps
+         follow as checkpoints 2..N. Forward-only. --- */
       var proto = st.protocol || [];
+      var quota = quotaFor(s, st.ref);
+      var authed = st.verified && quota.ok;
       function railStatus(i) {
         if (st.finished) return (st.steps[i] && st.steps[i].status === 'ABORTED') ? 'aborted' : 'done';
         if (st.running) return i < st.idx ? 'done' : (i === st.idx ? 'active' : 'locked');
         return 'locked';
       }
       var rail = '<div class="walk-rail">';
+      rail += '<div class="cp ' + (authed ? 'done' : 'active') + '"><span class="cp-n">' +
+        (authed ? '✓' : '1') + '</span><span class="cp-l">' + esc(t('i.auth.title')) + '</span></div>';
       if (!proto.length) {
-        rail += '<div class="cp locked"><span class="cp-n">—</span><span class="cp-l">' + esc(t('i.noProtocol')) + '</span></div>';
+        rail += '<span class="cp-line"></span><div class="cp locked"><span class="cp-n">—</span>' +
+          '<span class="cp-l">' + esc(t('i.noProtocol')) + '</span></div>';
       } else {
         proto.forEach(function (sp, i) {
-          if (i) rail += '<span class="cp-line ' + (i <= st.idx || st.finished ? 'on' : '') + '"></span>';
-          var rs = railStatus(i);
+          rail += '<span class="cp-line ' + (authed && (i <= st.idx || st.finished) ? 'on' : '') + '"></span>';
+          var rs = authed ? railStatus(i) : 'locked';
           rail += '<div class="cp ' + rs + '"><span class="cp-n">' +
-            (rs === 'done' ? '✓' : (rs === 'aborted' ? '!' : (i + 1))) + '</span>' +
+            (rs === 'done' ? '✓' : (rs === 'aborted' ? '!' : (i + 2))) + '</span>' +
             '<span class="cp-l">' + esc(L(sp.title)) + '</span></div>';
         });
       }
@@ -1960,7 +1961,32 @@
       h += rail;
       h += '<div class="walk">';
 
-      if (!proto.length) {
+      /* Checkpoint 1: identity attestation + quota decision. */
+      if (!st.verified && !st.running && !st.finished) {
+        h += '<div class="walk-stage check">' +
+          '<div class="walk-counter">' + esc(t('i.checkpoint')) + ' · 1 ' + esc(t('i.of')) + ' ' + (proto.length + 1) + '</div>' +
+          '<h2 class="walk-title">' + esc(t('i.auth.title')) + '</h2>' +
+          '<div class="walk-body body-text">' + esc(t('i.auth.intro')) + '</div>' +
+          '<div class="fields mt" style="grid-template-columns:1fr"><div class="field">' +
+          '<label>' + esc(t('i.verify.input')) + '</label>' +
+          '<input data-ir="ref" value="' + esc(st.refInput) + '" placeholder="VDL-SUB-XXXX-XXXX-XX"></div></div>' +
+          '<div class="walk-foot"><button class="btn gold" data-ir="verify">' + esc(t('i.auth.submit')) + '</button></div>' +
+          (st.ref ? '<div class="notice bad mt"><span class="ttl">' + esc(t('i.auth.failed')) + '</span>' +
+            esc(t('i.verify.fail')) + '</div>' : '') +
+          '</div>';
+      } else if (st.verified && !quota.ok && !st.running && !st.finished) {
+        h += '<div class="walk-stage check">' +
+          '<div class="walk-counter">' + esc(t('i.checkpoint')) + ' · 1</div>' +
+          '<h2 class="walk-title">' + esc(t('i.auth.noQuotaTitle')) + '</h2>' +
+          '<div class="walk-body body-text">' + esc(t('i.auth.noQuota')) + '</div>' +
+          '<div class="hairline"></div><div class="kv">' +
+          [[t('g.subjectRef'), st.ref], [t('p.file.name'), st.subject ? st.subject.name : '—'],
+           [t('i.verify.credential'), st.subject ? st.subject.credentialLabel : '—']].map(function (r) {
+            return '<div class="k">' + esc(r[0]) + '</div><div class="v">' + esc(r[1]) + '</div>';
+          }).join('') + '</div>' +
+          '<div class="walk-foot"><button class="btn secondary sm" data-ir="unverify">' + esc(t('i.auth.retry')) + '</button></div>' +
+          '</div>';
+      } else if (!proto.length) {
         h += '<div class="walk-stage"><div class="empty"><span class="big">§</span>' + esc(t('i.noProtocol')) +
           '<br>' + esc(t('i.noProtocolSub')) + '</div></div>';
       } else if (st.finished) {
@@ -1981,12 +2007,21 @@
           '</div></div>';
       } else if (!st.running) {
         h += '<div class="walk-stage lobby">' +
-          '<div class="kicker">' + esc(t('i.level.' + st.level)) + '</div>' +
+          '<div class="kicker">' + esc(t('i.level.' + st.level)) + ' · ' + esc(t('i.auth.done')) + '</div>' +
           '<h2 class="walk-title">' + esc(t('i.walkIntroTitle')) + '</h2>' +
-          '<div class="walk-body body-text">' + esc(t('i.walkIntro')) + '</div>' +
-          '<div class="walk-foot">' +
-          '<button class="btn gold" data-ir="start"' + (st.verified ? '' : ' disabled') + '>' + esc(t('i.start')) + '</button>' +
-          (st.verified ? '' : '<span class="small muted">' + esc(t('a.verify')) + '</span>') +
+          '<div class="walk-body body-text">' + esc(t('i.walkIntro')) + '</div>';
+        if (st.subject) {
+          h += '<div class="kv mt">' +
+            [[t('g.subjectRef'), st.ref], [t('p.file.name'), st.subject.name],
+             [t('p.file.dob'), st.subject.dob], [t('p.file.nationality'), st.subject.nationality],
+             [t('f.passportNo'), st.subject.passportNo],
+             [t('i.verify.credential'), st.subject.credentialLabel]].map(function (r) {
+              return '<div class="k">' + esc(r[0]) + '</div><div class="v">' + esc(r[1]) + '</div>';
+            }).join('') + '</div>';
+        }
+        h += '<div class="walk-foot">' +
+          '<button class="btn gold" data-ir="start">' + esc(t('i.start')) + '</button>' +
+          '<button class="btn secondary sm" data-ir="unverify">' + esc(t('i.auth.retry')) + '</button>' +
           '</div>' +
           '<div class="small muted walk-note">' + esc(t('i.walkForwardNote')) + '</div>' +
           '</div>';
@@ -2025,14 +2060,23 @@
           V_toast(t('i.verify.fail'), 'bad'); return;
         }
         st.verified = true; st.subject = snapSubject(s, v);
-        var pend = (s.pending[v] || []).filter(function (p) { return !p.done && levels.indexOf(p.level) >= 0; });
-        if (pend.length) { st.level = pend[0].level; st.purpose = pend[0].purpose; }
+        var q = quotaFor(s, v);
+        if (q.ok) {
+          /* Only auto-select a level when a task was explicitly issued. */
+          if (q.reason === 'task') { st.level = q.level; st.purpose = q.purpose; }
+          else { st.purpose = q.purpose; }
+          V_toast(t('i.auth.quotaOk'), 'good');
+        } else {
+          V_toast(t('i.auth.noQuotaTitle'), 'bad');
+        }
         st.protocol = (s.protocol && s.protocol[st.level]) || [];
-        save(); paint(); V_toast(t('i.verify.ok'), 'good');
+        save(); paint();
       });
     }
     function start() {
-      if (!st.verified) { V_toast(t('a.verify'), 'bad'); return; }
+      if (!st.verified) { V_toast(t('i.auth.title'), 'bad'); return; }
+      var q = quotaFor(currentState, st.ref);
+      if (!q.ok) { V_toast(t('i.auth.noQuotaTitle'), 'bad'); paint(); return; }
       st.protocol = ((currentState && currentState.protocol) || {})[st.level] || [];
       if (!st.protocol.length) { V_toast(t('i.noProtocol'), 'bad'); return; }
       var pend = ((currentState && currentState.pending) || {})[st.ref] || [];

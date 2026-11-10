@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grand Duchy of Vidland · Frontier Admission Check</title>
+<link rel="icon" type="image/svg+xml" href="icons/entry.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/entry-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/entry-180.png">
+<link rel="manifest" href="icons/manifest-entry.json">
+<meta name="theme-color" content="#0a1b2e">
+<meta name="apple-mobile-web-app-title" content="入境核验">
+<meta name="application-name" content="入境核验">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="vidland.css">
+<script src="vidland-store.js"></script>
+<script src="vidland-i18n.js"></script>
+<script src="vidland-core.js"></script>
+<style>
+  .entry-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 16px}
+  @media(max-width:560px){.entry-form{grid-template-columns:1fr}}
+  .entry-form .span2{grid-column:span 2}
+  @media(max-width:560px){.entry-form .span2{grid-column:span 1}}
+  .verdict{border:1px solid var(--line-2);padding:18px 20px;margin-top:16px;background:var(--paper-2)}
+  .verdict .code{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--gold)}
+  .verdict .vtitle{font-family:var(--serif);font-size:21px;color:var(--navy);margin:6px 0 8px}
+  .verdict.admit{border-left:4px solid var(--green)}
+  .verdict.hold{border-left:4px solid var(--amber)}
+  .verdict.refuse{border-left:4px solid var(--red)}
+  .entry-nav{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+</style>
+</head>
+<body>
+<div id="masthead"></div>
+<div id="subbar"></div>
+<div class="wrap">
+  <div class="hero">
+    <div class="eyebrow" id="h-eyebrow"></div>
+    <h1 id="h-title"></h1>
+    <div class="lead" id="h-lead"></div>
+    <div class="small" style="margin-top:12px;color:var(--gold);font-weight:600">◈ <span id="h-secure"></span></div>
+    <div class="watermark">VIDLAND</div>
+  </div>
+
+  <div class="entry-nav">
+    <a class="btn secondary sm" id="back-link" href="border.html">← <span id="back-text"></span></a>
+    <span class="small muted" id="nav-note"></span>
+  </div>
+
+  <div class="doc">
+    <div class="doc-head"><div><div class="kicker" id="q-kicker"></div><h2 id="q-title"></h2>
+      <div class="sub" id="q-sub"></div></div><span class="badge info" id="q-badge"></span></div>
+    <div class="doc-body">
+      <div class="entry-form" id="q-form"></div>
+      <div class="btn-row" id="q-actions"></div>
+      <div id="q-result"></div>
+    </div>
+    <div class="doc-foot"><span id="q-foot"></span><span class="docnum" id="q-num"></span></div>
+  </div>
+
+  <div class="doc">
+    <div class="doc-head"><div><div class="kicker" id="note-kicker"></div><h3 id="note-title"></h3></div></div>
+    <div class="doc-body"><div class="small" id="note-body"></div></div>
+    <div class="doc-foot"><span id="note-foot"></span><span class="docnum" id="note-num"></span></div>
+  </div>
+</div>
+<div id="footer"></div>
+
+<script>
+(function () {
+  'use strict';
+  var V = window.Vidland, t = V.t, esc = V.esc;
+  var FIELDS = [
+    { k: 'name',      label: 'e.f.name',  ph: 'e.f.namePh' },
+    { k: 'dob',       label: 'p.file.dob',ph: 'YYYY-MM-DD' },
+    { k: 'passport',  label: 'f.passportNo', ph: 'e.f.passPh' },
+    { k: 'nationalId',label: 'g.nationalId', ph: 'e.f.nidPh' }
+  ];
+  var query = { name: '', dob: '', passport: '', nationalId: '' };
+  var result = null;     // { status:'found'|'notfound'|'ambiguous'|'idle', ref, decision }
+  var currentState = null;
+
+  function norm(v) { return String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ''); }
+
+  function identityOf(x) {
+    var i = x.identity || {};
+    return {
+      name: i.name || [i.surname, i.given].filter(Boolean).join(' ') || '—',
+      dob: i.dob || '—',
+      nationality: i.nationality || i.natCurrent || '—',
+      passportNo: i.passportNo || '—',
+      address: i.address || '—'
+    };
+  }
+
+  function filledCount() {
+    return FIELDS.filter(function (f) { return norm(query[f.k]).length > 0; }).length;
+  }
+
+  function findMatches(s) {
+    var refs = Object.keys(s.subjects || {});
+    var hits = [];
+    refs.forEach(function (ref) {
+      var x = s.subjects[ref], i = identityOf(x);
+      var score = 0;
+      if (norm(query.name) && norm(i.name).indexOf(norm(query.name)) >= 0) score++;
+      if (norm(query.dob) && norm(i.dob) === norm(query.dob)) score++;
+      if (norm(query.passport) && norm(i.passportNo) === norm(query.passport)) score++;
+      if (norm(query.nationalId) && norm(x.nationalId) === norm(query.nationalId)) score++;
+      if (score >= 2) hits.push({ ref: ref, score: score });
+    });
+    return hits.sort(function (a, b) { return b.score - a.score; });
+  }
+
+  function decide(s, ref) {
+    var x = s.subjects[ref];
+    var pend = (s.pending[ref] || []).filter(function (p) {
+      return !p.done && p.level === 'R';
+    });
+    if (pend.length) return { code: 'HOLD', reason: 'e.dec.holdInspection' };
+    var cred = x.credential || 'NONE';
+    if (cred === 'CITIZEN') return { code: 'ADMIT', reason: 'e.dec.citizen' };
+    if ((V.CRED_RANK[cred] || 0) >= 1) return { code: 'ADMIT', reason: 'e.dec.credential' };
+    /* An R-level clearance already issued but no permit yet: the Chancellery
+       has not promulgated the entitlement, so admission is withheld. */
+    var cleared = (s.certificates || []).some(function (c) {
+      return c.ref === ref && c.level === 'R' && c.status === 'VALID';
+    });
+    if (cleared) return { code: 'HOLD', reason: 'e.dec.awaitPermit' };
+    return { code: 'REFUSE', reason: 'e.dec.noPermit' };
+  }
+
+  function paintStatic() {
+    document.getElementById('h-eyebrow').textContent = t('g.stateShort') + ' · ' + t('g.official');
+    document.getElementById('h-title').textContent = t('e.title');
+    document.getElementById('h-lead').textContent = t('e.sub');
+    document.getElementById('h-secure').textContent = t('g.secure');
+    document.getElementById('back-text').textContent = t('e.back');
+    document.getElementById('nav-note').textContent = t('e.navNote');
+    document.getElementById('q-kicker').textContent = t('g.securityShort');
+    document.getElementById('q-title').textContent = t('e.queryTitle');
+    document.getElementById('q-sub').textContent = t('e.querySub');
+    document.getElementById('q-badge').textContent = t('g.restricted');
+    document.getElementById('q-foot').textContent = t('g.secure');
+    document.getElementById('q-num').textContent = 'ENTRY / CHECK';
+    document.getElementById('note-kicker').textContent = t('g.chancelleryShort');
+    document.getElementById('note-title').textContent = t('e.noteTitle');
+    document.getElementById('note-body').textContent = t('e.noteBody');
+    document.getElementById('note-foot').textContent = t('x.sealed');
+    document.getElementById('note-num').textContent = t('x.port');
+    document.getElementById('back-link').setAttribute('href', 'border.html');
+    paint();
+  }
+
+  function paint() {
+    var f = document.getElementById('q-form');
+    f.innerHTML = FIELDS.map(function (x) {
+      return '<div class="field"><label>' + esc(t(x.label)) + '</label>' +
+        '<input data-ek="' + x.k + '" value="' + esc(query[x.k]) + '" placeholder="' +
+        esc(/^e\.f\./.test(x.ph) ? t(x.ph) : x.ph) + '"></div>';
+    }).join('');
+    var enough = filledCount() >= 2;
+    document.getElementById('q-actions').innerHTML =
+      '<button class="btn gold" data-ea="check"' + (enough ? '' : ' disabled') + '>' +
+      esc(t('e.check')) + '</button>' +
+      (result ? '<button class="btn secondary" data-ea="clear">' + esc(t('e.clear')) + '</button>' : '') +
+      (enough ? '' : '<span class="small muted">' + esc(t('e.needTwo')) + '</span>');
+    document.getElementById('q-result').innerHTML = renderResult();
+  }
+
+  function renderResult() {
+    if (!result || result.status === 'idle') return '';
+    if (result.status === 'notfound') {
+      return '<div class="notice bad mt"><span class="ttl">' + esc(t('e.notFoundTitle')) +
+        '</span>' + esc(t('e.notFound')) + '</div>';
+    }
+    if (result.status === 'ambiguous') {
+      return '<div class="notice warn mt"><span class="ttl">' + esc(t('e.ambiguousTitle')) +
+        '</span>' + esc(t('e.ambiguous')) + '</div>';
+    }
+    var s = currentState || {}, x = s.subjects[result.ref] || {}, i = identityOf(x);
+    var d = result.decision;
+    var rows = [
+      [t('g.subjectRef'), result.ref],
+      [t('p.file.name'), i.name], [t('p.file.dob'), i.dob],
+      [t('p.file.nationality'), i.nationality], [t('f.passportNo'), i.passportNo],
+      [t('f.address'), i.address], [t('g.nationalId'), x.nationalId || '—'],
+      [t('i.verify.credential'), t(x.credential === 'NONE' ? 'cr.none' : x.credential === 'CITIZEN' ? 'cr.CITIZEN' : 'cr.' + x.credential)],
+      [t('cr.code'), x.credentialCode || '—']
+    ];
+    return '<div class="hairline"></div>' +
+      '<h3 class="small" style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--navy);margin-bottom:8px">' +
+      esc(t('e.particulars')) + '</h3>' +
+      '<div class="kv">' + rows.map(function (r) {
+        return '<div class="k">' + esc(r[0]) + '</div><div class="v">' + esc(r[1]) + '</div>';
+      }).join('') + '</div>' +
+      '<div class="verdict ' + d.code.toLowerCase() + '">' +
+      '<div class="code">' + esc(t('e.decision')) + ' · ' + esc(d.code) + '</div>' +
+      '<div class="vtitle">' + esc(t('e.dec.' + d.code.toLowerCase())) + '</div>' +
+      '<div class="small">' + esc(t(d.reason)) + '</div></div>';
+  }
+
+  function check() {
+    if (filledCount() < 2) { V.toast(t('e.needTwo'), 'bad'); return; }
+    V.Vault.state().then(function (s) {
+      currentState = s;
+      var hits = findMatches(s);
+      if (!hits.length) result = { status: 'notfound' };
+      else if (hits.length > 1 && hits[0].score === hits[1].score) result = { status: 'ambiguous' };
+      else result = { status: 'found', ref: hits[0].ref, decision: decide(s, hits[0].ref) };
+      paint();
+    }).catch(function () { V.toast(t('e.notFoundTitle'), 'bad'); });
+  }
+
+  document.addEventListener('input', function (e) {
+    var k = e.target.dataset && e.target.dataset.ek;
+    if (!k) return;
+    query[k] = e.target.value;
+    var enough = filledCount() >= 2;
+    var btn = document.querySelector('[data-ea="check"]');
+    if (btn) btn.disabled = !enough;
+    var hint = document.querySelector('#q-actions .small');
+    if (hint) hint.style.display = enough ? 'none' : '';
+  });
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-ea]'); if (!el) return;
+    if (el.dataset.ea === 'check') check();
+    else if (el.dataset.ea === 'clear') {
+      FIELDS.forEach(function (x) { query[x.k] = ''; });
+      result = null; paint();
+    }
+  });
+
+  V.init('entry', paintStatic);
+  paintStatic();
+})();
+</script>
+</body>
+</html>
