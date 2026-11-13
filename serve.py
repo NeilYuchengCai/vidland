@@ -865,6 +865,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_core_script(self):
+        """Splice the CURRENT public key into vidland-core.js on the wire.
+
+        Automatic rotation must never rewrite a tracked source file: that
+        would dirty the working tree every few days and leave stale clones
+        with an obsolete key. The repository copy is only a baseline; the
+        live key lives in vidland-data/current.pub.json (git-ignored). Pages
+        already loaded keep their old key and still work, because the ring
+        retains earlier generations until their envelopes are re-sealed.
+        """
+        try:
+            with open(os.path.join(ROOT, "vidland-core.js"), "r",
+                      encoding="utf-8") as f:
+                txt = f.read()
+            pub = audit_vault.current_public() if AUDIT_READY else None
+            if pub:
+                block = ('var PUBLIC_JWK = {\n'
+                         '    kty: "RSA",\n'
+                         '    n: "%s",\n'
+                         '    e: "%s"\n'
+                         '  };' % (pub["n"], pub["e"]))
+                txt, _n = re.subn(r"var\s+PUBLIC_JWK\s*=\s*\{.*?\}\s*;",
+                                  lambda m: block, txt, count=1, flags=re.S)
+                kid_line = '  var PUBLIC_KID = "%s";' % pub["kid"]
+                if re.search(r"var\s+PUBLIC_KID\s*=\s*\"[^\"]+\"\s*;", txt):
+                    txt = re.sub(r"var\s+PUBLIC_KID\s*=\s*\"[^\"]+\"\s*;",
+                                 lambda m: kid_line, txt, count=1)
+                else:
+                    txt = txt.replace(block, block + "\n" + kid_line, 1)
+            body = txt.encode("utf-8")
+        except Exception as exc:
+            print("  [audit] 公钥注入失败，改用仓库基线：%s" % exc, flush=True)
+            return super().do_GET()
+        self.send_response(200)
+        self.send_header("Content-Type",
+                         "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _protocol_host_allowed(self):
         return (not LAN or ADMIN_LAN or is_local_peer(self.client_address[0]))
 
@@ -985,6 +1025,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._serve_access_gate()
             if self._needs_access_gate(path):
                 return self._serve_access_gate()
+            if path == "/vidland-core.js":
+                return self._serve_core_script()
             return super().do_GET()
         if not self._is_store_api():
             self.send_error(404)
@@ -1356,6 +1398,12 @@ def main():
             why = "PyCryptodome 未安装"
         print("  [audit] 审计端已停用（%s）；管理端解密将不可用。" % why,
               flush=True)
+    # Scheduled key rotation runs inside this process so it can swap the
+    # active generation without a restart. The deadline itself is stored in
+    # the DPAPI-sealed ring and is drawn from the OS CSPRNG.
+    if AUDIT_READY and audit_vault.rotation_config()["enabled"]:
+        threading.Thread(target=audit_vault.auto_rotation_loop,
+                         daemon=True, name="vdl-auto-rotate").start()
     ca_srv = None
     if TLS:
         # Do NOT wrap the listening socket itself: the mixin decides per
@@ -1412,6 +1460,13 @@ def main():
         print("    主密钥  : %s 封装 · 审计库 AES-256-GCM 逐条加密" %
               audit_vault.KEY_MODE)
         print("    手机端  : 无密钥、无 token 明文（HttpOnly Cookie）")
+        _rc = audit_vault.rotation_config()
+        if _rc["enabled"]:
+            print("    自动轮换: 开 · 基准 %g 天 · 随机抖动 ±%d%% · RSA-%d · 保留 %d 代" %
+                  (_rc["days"], int(_rc["jitter"] * 100),
+                   _rc["bits"], _rc["keep"]))
+        else:
+            print("    自动轮换: 关（VDL_ROTATE_DAYS=0）")
     print("-" * 66)
     print("  R / Z / A / M protocols are EMPTY until defined in the Authority.")
     print("  Ctrl+C to stop.")

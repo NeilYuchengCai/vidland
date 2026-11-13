@@ -228,6 +228,18 @@ def print_audit_hint():
         '标准 · 仅 admin / entry 需批准，其余三端直接打开'))
     print('  本机审计端      : http://127.0.0.1:%d/ （只监听 127.0.0.1）' % AUDIT_PORT)
     print('  审计端认证      : 无需口令 · 仅本机能打开 · 会话由本机密钥签名')
+    days = os.environ.get('VDL_ROTATE_DAYS', '7').strip()
+    if days in ('0', 'false', 'off', 'no'):
+        print('  主密钥自动轮换  : 关闭')
+    else:
+        try:
+            pct = int(float(os.environ.get('VDL_ROTATE_JITTER', '0.4')) * 100)
+        except ValueError:
+            pct = 40
+        print('  主密钥自动轮换  : 开 · 基准 %s 天 · 随机抖动 ±%d%% · RSA-%s · 保留 %s 代'
+              % (days, pct,
+                 os.environ.get('VDL_ROTATE_BITS', '3072'),
+                 os.environ.get('VDL_ROTATE_KEEP', '3')))
 
 
 def status():

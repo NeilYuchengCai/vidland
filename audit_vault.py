@@ -27,6 +27,7 @@ this endpoint is reachable from the LAN, and no key material is ever
 serialised into a response.
 """
 import base64
+import contextlib
 import ctypes
 import datetime
 import hashlib
@@ -45,6 +46,16 @@ VAULT_FILE = os.path.join(DATA_DIR, "audit.vault")
 VAULT_KEY_FILE = os.path.join(DATA_DIR, "audit.key")
 MASTER_KEY_FILE = os.path.join(DATA_DIR, "master.key")
 STORE_FILE = os.path.join(DATA_DIR, "store.json")
+# Runtime public key state. Rotation updates this file, NOT the source file
+# shipped in the repository, so automatic rotation never dirties git.
+PUB_FILE = os.path.join(DATA_DIR, "current.pub.json")
+ROTATE_LOCK_FILE = os.path.join(DATA_DIR, "rotate.lock")
+
+# Automatic rotation defaults. Intervals are randomised, not fixed.
+ROTATE_DAYS_DEFAULT = 7
+ROTATE_JITTER_DEFAULT = 0.4
+ROTATE_BITS_DEFAULT = 3072
+ROTATE_KEEP_DEFAULT = 3
 # Legacy builds wrote a random hex passphrase to vidland-data/audit.pass.
 # That file is no longer read: the audit endpoint authenticates by host
 # provenance (loopback socket, Host/Origin checks, DPAPI-signed session).
@@ -287,6 +298,244 @@ def service_port_in_use():
         s.close()
 
 
+# --------------------------------------------------------------------------
+# Automatic, unpredictable rotation
+# --------------------------------------------------------------------------
+def _b64u_int(i):
+    raw = i.to_bytes((i.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def rotation_config():
+    """VDL_ROTATE_DAYS=0 disables the scheduler entirely."""
+    def num(name, default, lo, hi):
+        try:
+            v = float(os.environ.get(name, str(default)))
+        except ValueError:
+            v = float(default)
+        return max(lo, min(hi, v))
+    days = num("VDL_ROTATE_DAYS", ROTATE_DAYS_DEFAULT, 0, 3650)
+    return {"enabled": days > 0, "days": days,
+            "jitter": num("VDL_ROTATE_JITTER", ROTATE_JITTER_DEFAULT, 0, 0.9),
+            "bits": int(num("VDL_ROTATE_BITS", ROTATE_BITS_DEFAULT, 2048, 4096)),
+            "keep": int(num("VDL_ROTATE_KEEP", ROTATE_KEEP_DEFAULT, 1, 12))}
+
+
+def schedule_next(cfg, now_ms=None):
+    """Next rotation time: base interval times a CSPRNG-drawn factor in
+    [1-jitter, 1+jitter]. Two draws avoid predictable round numbers."""
+    now = now_ms if now_ms is not None else _now()
+    base = cfg["days"] * 86400000.0
+    j = cfg["jitter"]
+    r = (secrets.randbelow(1_000_000) +
+         secrets.randbelow(1_000_000)) / 2_000_000.0
+    return int(now + base * (1.0 - j + 2.0 * j * r))
+
+
+def public_record(key, kid):
+    return {"v": 1, "kty": "RSA", "kid": kid,
+            "n": _b64u_int(key.n), "e": _b64u_int(key.e),
+            "alg": "RSA-OAEP/SHA256 + AES-256-GCM"}
+
+
+def write_current_public(obj):
+    _atomic_write(PUB_FILE, _json_bytes(obj))
+
+
+def current_public(create=True):
+    """Public key actually served to terminals. Falls back to the active
+    generation of the ring on a fresh install. `create=False` keeps this a
+    strictly read-only lookup (used by startup self-checks and tests)."""
+    if os.path.isfile(PUB_FILE):
+        try:
+            with open(PUB_FILE, "r", encoding="utf-8") as f:
+                obj = json.load(f)
+            if obj.get("kid") and obj.get("n") and obj.get("e"):
+                return obj
+        except Exception:
+            pass
+    ring = load_master_ring()
+    if not ring:
+        return None
+    key = RSA.import_key(ring_active_pem(ring))
+    obj = public_record(key, ring["active"])
+    if create:
+        write_current_public(obj)
+    return obj
+
+
+@contextlib.contextmanager
+def rotation_lock():
+    """Cross-process mutex. A stale lock (>5 min) is cleared so a crashed
+    rotation cannot wedge the scheduler forever."""
+    os.makedirs(os.path.dirname(ROTATE_LOCK_FILE), exist_ok=True)
+    try:
+        if time.time() - os.stat(ROTATE_LOCK_FILE).st_mtime > 300:
+            os.remove(ROTATE_LOCK_FILE)
+    except OSError:
+        pass
+    fd = None
+    for _ in range(50):
+        try:
+            fd = os.open(ROTATE_LOCK_FILE,
+                         os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            time.sleep(0.1)
+    if fd is None:
+        raise RuntimeError("另一个轮换进程正在运行，请稍后重试")
+    try:
+        os.write(fd, str(os.getpid()).encode("ascii"))
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.remove(ROTATE_LOCK_FILE)
+        except OSError:
+            pass
+
+
+def _reseal_retired(retire_map, new_pub, new_kid):
+    """Before dropping an old generation, move every envelope still sealed
+    to it onto the new generation. Plaintext never touches the disk."""
+    if not retire_map or not os.path.isfile(STORE_FILE):
+        return 0
+    with open(STORE_FILE, "r", encoding="utf-8") as f:
+        reg = json.load(f)
+    data = reg.get("data") or {}
+    n = 0
+    for k, v in list(data.items()):
+        if not k.startswith("vdl.v1.env."):
+            continue
+        try:
+            env = json.loads(v)
+            p = env.get("payload") or {}
+            if p.get("kid") not in retire_map:
+                continue
+            plain = _open_hybrid(retire_map[p["kid"]], p)
+            env["payload"] = _seal_hybrid(new_pub, plain, new_kid)
+            data[k] = json.dumps(env, ensure_ascii=False)
+            n += 1
+        except Exception as exc:
+            raise RuntimeError("淘汰密钥代前重封 %s 失败：%s" % (k, exc))
+    if n:
+        reg["data"] = data
+        reg["rev"] = int(reg.get("rev", 0)) + 1
+        _atomic_write(STORE_FILE,
+                      json.dumps(reg, ensure_ascii=False).encode("utf-8"))
+    return n
+
+
+def gradual_rotation(cfg=None, reason="scheduled", now_ms=None):
+    """Hot rotation: no downtime, no page refresh, no source-file rewrite.
+
+    A fresh generation is appended to the DPAPI-sealed ring and becomes the
+    public key served to new pages. Older generations stay until the sliding
+    window expires; envelopes still using a retiring generation are re-sealed
+    first. Pages already loaded keep their old public key and keep working
+    because that generation is still in the ring.
+    """
+    cfg = cfg or rotation_config()
+    now = now_ms if now_ms is not None else _now()
+    with rotation_lock():
+        ring = load_master_ring()
+        if not ring:
+            raise RuntimeError("找不到 master.key，无法自动轮换")
+        new_key = RSA.generate(cfg["bits"], randfunc=secrets.token_bytes)
+        new_kid = key_kid(new_key)
+        old_active = ring.get("active")
+        keys = list(ring.get("keys", []))
+        keys.append({"kid": new_kid,
+                     "pem": new_key.export_key(format="PEM").decode("ascii"),
+                     "createdAt": now})
+        ring["keys"] = keys
+        ring["active"] = new_kid
+
+        retire_map = {}
+        while len(ring["keys"]) > cfg["keep"]:
+            old = ring["keys"].pop(0)
+            retire_map[old["kid"]] = old["pem"]
+        resealed = _reseal_retired(retire_map, new_key.publickey(), new_kid)
+
+        sched = ring.get("schedule") or {}
+        sched_cfg = dict(cfg)
+        if sched_cfg["days"] <= 0:          # forced rotation with scheduler off
+            sched_cfg["days"] = ROTATE_DAYS_DEFAULT
+        sched["lastRotatedAt"] = now
+        sched["nextRotateAt"] = schedule_next(sched_cfg, now)
+        sched["lastReason"] = reason
+        hist = sched.get("history") or []
+        hist.append({"at": now, "from": old_active, "to": new_kid,
+                     "reason": reason, "retired": sorted(retire_map),
+                     "resealed": resealed, "bits": cfg["bits"]})
+        sched["history"] = hist[-50:]
+        ring["schedule"] = sched
+
+        save_master_ring(ring)
+        write_current_public(public_record(new_key, new_kid))
+        try:
+            if VAULT is not None:
+                VAULT.log("KEY", "ROTATED",
+                          {"from": old_active, "to": new_kid,
+                           "reason": reason, "bits": cfg["bits"],
+                           "retired": sorted(retire_map),
+                           "resealed": resealed}, internal=True)
+        except Exception:
+            pass
+        return {"ok": True, "from": old_active, "to": new_kid,
+                "bits": cfg["bits"], "generations": len(ring["keys"]),
+                "retired": sorted(retire_map), "resealed": resealed,
+                "nextRotateAt": sched["nextRotateAt"], "reason": reason}
+
+
+def maybe_rotate_now(cfg=None, force=False):
+    cfg = cfg or rotation_config()
+    if not cfg["enabled"] and not force:
+        return {"ok": True, "skipped": "disabled"}
+    ring = load_master_ring()
+    if not ring:
+        return {"ok": False, "error": "master.key 不存在"}
+    sched = ring.get("schedule") or {}
+    nxt = sched.get("nextRotateAt")
+    now = _now()
+    if nxt is None:
+        # First boot: arm a randomised deadline instead of rotating at once.
+        with rotation_lock():
+            ring = load_master_ring()
+            s = ring.get("schedule") or {}
+            if s.get("nextRotateAt") is None:
+                arm_cfg = dict(cfg)
+                if arm_cfg["days"] <= 0:
+                    arm_cfg["days"] = ROTATE_DAYS_DEFAULT
+                s["createdAt"] = now
+                s["nextRotateAt"] = schedule_next(arm_cfg, now)
+                ring["schedule"] = s
+                save_master_ring(ring)
+        return {"ok": True, "armed": True}
+    if force or now >= nxt:
+        return gradual_rotation(cfg, reason="manual" if force else "scheduled")
+    return {"ok": True, "skipped": "not-due", "nextRotateAt": nxt}
+
+
+def auto_rotation_loop(cfg=None, tick=60):
+    """Daemon loop used by serve.py. The 60 s tick is only a CHECK; the real
+    deadline is the CSPRNG-randomised timestamp inside the sealed ring."""
+    cfg = cfg or rotation_config()
+    if not cfg["enabled"]:
+        return
+    try:
+        maybe_rotate_now(cfg)
+    except Exception as exc:
+        print("  [audit] 自动轮换初始化失败：%s" % exc, flush=True)
+    while True:
+        time.sleep(tick)
+        try:
+            maybe_rotate_now(cfg)
+        except Exception as exc:
+            print("  [audit] 自动轮换失败（服务继续运行）：%s" % exc,
+                  flush=True)
+
+
 def _ua_hash(ua):
     return hashlib.sha256((ua or "").encode("utf-8")).hexdigest()[:32]
 
@@ -445,19 +694,22 @@ class AuditVault:
 
     def _verify_master(self):
         """Warn (do not block) when the sealed private key and the public
-        JWK shipped to the terminals have drifted apart — e.g. someone
-        restored master.key.old after a rotation."""
+        key currently served to terminals have drifted apart."""
         try:
             key = RSA.import_key(self.master_pem)
-            n, e, kid, _txt = public_jwk_from_core()
-            if n is not None and (key.n, key.e) != (n, e):
-                print("  [audit] 警告: master.key 与 core.js 的 PUBLIC_JWK "
-                      "不一致，新提交的密封详情将无法解开。", flush=True)
-                return
+            pub = current_public(create=False)
             active = (self.master_ring or {}).get("active")
-            if kid and active and kid != active:
-                print("  [audit] 警告: core.js 的 PUBLIC_KID 与 master.key "
-                      "活动密钥代不一致，请核对或执行一次 --verify。", flush=True)
+            if not pub:
+                return
+            if pub.get("kid") != active:
+                print("  [audit] 警告: 当前下发公钥与 master.key 活动代 "
+                      "不一致，请执行一次 --verify。", flush=True)
+                return
+            pn = int.from_bytes(_b64u(pub["n"]), "big")
+            pe = int.from_bytes(_b64u(pub["e"]), "big")
+            if (key.n, key.e) != (pn, pe):
+                print("  [audit] 警告: master.key 与当前下发公钥不匹配，"
+                      "新提交的密封详情将无法解开。", flush=True)
         except Exception:
             pass
 
@@ -540,9 +792,22 @@ class AuditVault:
         rotation never makes an older record unreadable."""
         if not CRYPTO_OK:
             raise RuntimeError("PyCryptodome is required for /api/vault/open")
-        kid = env.get("kid") or (self.master_ring or {}).get("active")
-        pem = (ring_pem_for(self.master_ring, kid) if self.master_ring
-               else self.master_pem)
+        ring = self.master_ring or {}
+        kid = env.get("kid") or ring.get("active")
+        known = any(it.get("kid") == kid for it in ring.get("keys", []))
+        if not known:
+            # A hot rotation (scheduler or CLI) may have published a new
+            # generation after this process started. Reload the sealed ring
+            # from disk instead of requiring a restart.
+            fresh = load_master_ring()
+            if fresh:
+                with self.lock:
+                    self.master_ring = fresh
+                    self.master_pem = ring_active_pem(fresh).encode("utf-8")
+                    self._rsa_key = None
+                    self._rsa_kid = None
+                ring = fresh
+        pem = (ring_pem_for(ring, kid) if ring else self.master_pem)
         if not pem:
             raise RuntimeError("NO_PRIVATE_KEY_FOR_KID: %s" % kid)
         if isinstance(pem, str):
@@ -1200,7 +1465,7 @@ def rotate_master(keep_old=False, allow_running=False):
     if not ring:
         raise RuntimeError("找不到 master.key。请先启动一次服务完成主私钥迁移。")
 
-    # Exact original bytes, so any failure can restore all three files.
+    # Exact original bytes, so any failure can restore all four files.
     with open(MASTER_KEY_FILE, "rb") as f:
         master_before = f.read()
     with open(core_path, "rb") as f:
@@ -1209,6 +1474,10 @@ def rotate_master(keep_old=False, allow_running=False):
     if os.path.isfile(STORE_FILE):
         with open(STORE_FILE, "rb") as f:
             store_before = f.read()
+    pub_before = None
+    if os.path.isfile(PUB_FILE):
+        with open(PUB_FILE, "rb") as f:
+            pub_before = f.read()
 
     n_e = public_jwk_from_core(core_path)
     if n_e[0] is None:
@@ -1249,10 +1518,15 @@ def rotate_master(keep_old=False, allow_running=False):
             raise RuntimeError("信封 %s 迁移失败，未做任何改动：%s" % (k, exc))
 
     # ---- 2. Publish the new generation ----------------------------------
+    cfg = rotation_config()
     new_ring = {"v": MASTER_RING_V, "active": new_kid,
                 "keys": [{"kid": new_kid,
                           "pem": new_key.export_key(format="PEM").decode("ascii"),
-                          "createdAt": _now()}]}
+                          "createdAt": _now()}],
+                "schedule": {"lastRotatedAt": _now(),
+                             "lastReason": "compact",
+                             "nextRotateAt": schedule_next(cfg)
+                             if cfg["enabled"] else None}}
     block = ('var PUBLIC_JWK = {\n'
              '    kty: "RSA",\n'
              '    n: "%s",\n'
@@ -1277,6 +1551,11 @@ def rotate_master(keep_old=False, allow_running=False):
         else:
             _atomic_write(STORE_FILE, store_before)
         _atomic_write(core_path, core_before)
+        if pub_before is None:
+            if os.path.isfile(PUB_FILE):
+                os.remove(PUB_FILE)
+        else:
+            _atomic_write(PUB_FILE, pub_before)
         raise RuntimeError("轮换校验失败，已回滚到原状态：%s" % cause)
 
     try:
@@ -1287,6 +1566,7 @@ def rotate_master(keep_old=False, allow_running=False):
             _atomic_write(STORE_FILE,
                           json.dumps(store, ensure_ascii=False).encode("utf-8"))
         _atomic_write(core_path, txt2.encode("utf-8"))
+        write_current_public(public_record(new_key, new_kid))
     except Exception as exc:
         rollback(str(exc))
 
@@ -1328,15 +1608,39 @@ def rotate_master(keep_old=False, allow_running=False):
 
 
 def verify_envelopes():
-    """Read-only health check: does the shipped public key match the key ring,
-    and can every stored envelope still be opened?"""
+    """Read-only health check: is the public key currently served to
+    terminals consistent with the key ring, and can every stored envelope
+    still be opened? Also reports the rotation schedule."""
     ring = load_master_ring()
     if not ring:
         return {"ok": False, "error": "master.key 不存在"}
     active = ring.get("active")
-    n, e, core_kid, _txt = public_jwk_from_core()
-    core_matches = (n is not None and master_kid(n, e) == active
-                    and (core_kid is None or core_kid == active))
+    gens = ring.get("keys", [])
+    refs = {g.get("kid"): 0 for g in gens}
+
+    pub = None
+    if os.path.isfile(PUB_FILE):
+        try:
+            with open(PUB_FILE, "r", encoding="utf-8") as f:
+                pub = json.load(f)
+        except Exception:
+            pub = None
+    if not pub:
+        try:
+            pub = public_record(RSA.import_key(ring_active_pem(ring)), active)
+        except Exception:
+            pub = None
+    pub_kid = pub.get("kid") if pub else None
+    pub_ok = False
+    if pub and pub.get("n") and pub.get("e"):
+        try:
+            pub_ok = (master_kid(int.from_bytes(_b64u(pub["n"]), "big"),
+                                 int.from_bytes(_b64u(pub["e"]), "big"))
+                      == pub_kid == active)
+        except Exception:
+            pub_ok = False
+    _bn, _be, baseline_kid, _txt = public_jwk_from_core()
+
     total = opened = stale = 0
     failed = []
     if os.path.isfile(STORE_FILE):
@@ -1351,18 +1655,28 @@ def verify_envelopes():
                 payload = env.get("payload") or {}
                 if not payload.get("ek"):
                     continue
-                _open_hybrid(ring_pem_for(ring, payload.get("kid")), payload)
+                kid = payload.get("kid") or active
+                _open_hybrid(ring_pem_for(ring, kid), payload)
                 opened += 1
-                if payload.get("kid") and payload["kid"] != active:
+                if kid != active:
                     stale += 1
+                if kid in refs:
+                    refs[kid] += 1
             except Exception as exc:
                 failed.append({"key": k, "error": str(exc)[:140]})
-    return {"ok": core_matches and not failed,
-            "activeKid": active, "coreKid": core_kid,
-            "coreMatches": core_matches,
-            "generations": len(ring.get("keys", [])),
+    sched = ring.get("schedule") or {}
+    cfg = rotation_config()
+    return {"ok": pub_ok and not failed,
+            "activeKid": active, "coreKid": baseline_kid,
+            "servedKid": pub_kid, "coreMatches": pub_ok,
+            "generations": len(gens), "generationRefs": refs,
             "envelopes": total, "opened": opened, "stale": stale,
             "failed": failed,
+            "autoEnabled": cfg["enabled"], "intervalDays": cfg["days"],
+            "jitter": cfg["jitter"], "bits": cfg["bits"], "keep": cfg["keep"],
+            "nextRotateAt": sched.get("nextRotateAt"),
+            "lastRotatedAt": sched.get("lastRotatedAt"),
+            "rotationCount": len(sched.get("history") or []),
             "legacyBackup": os.path.isfile(MASTER_KEY_FILE + ".old")}
 
 
@@ -1399,18 +1713,33 @@ def start_audit_server(port):
     return vault, srv
 
 
+def _fmt_ms(ms):
+    if not ms:
+        return "—"
+    return datetime.datetime.fromtimestamp(ms / 1000).strftime(
+        "%Y-%m-%d %H:%M:%S")
+
+
 if __name__ == "__main__":
     import sys
-    if "--rotate" in sys.argv:
+    if "--rotate-now" in sys.argv:
+        r = maybe_rotate_now(force=True)
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        sys.exit(0 if r.get("ok") else 1)
+    elif "--rotate" in sys.argv:
         rotate_master(keep_old="--keep-old" in sys.argv)
     elif "--verify" in sys.argv:
         r = verify_envelopes()
-        for k in ("ok", "activeKid", "coreKid", "coreMatches", "generations",
-                  "envelopes", "opened", "stale", "legacyBackup"):
-            print("%-14s: %s" % (k, r.get(k)))
+        for k in ("ok", "activeKid", "servedKid", "coreKid", "coreMatches",
+                  "generations", "generationRefs", "envelopes", "opened",
+                  "stale", "autoEnabled", "intervalDays", "jitter", "bits",
+                  "keep", "rotationCount", "legacyBackup"):
+            print("%-16s: %s" % (k, r.get(k)))
+        print("%-16s: %s" % ("nextRotateAt", _fmt_ms(r.get("nextRotateAt"))))
+        print("%-16s: %s" % ("lastRotatedAt", _fmt_ms(r.get("lastRotatedAt"))))
         if r.get("failed"):
-            print("failed        :", r["failed"])
-        print("结果          :", "全部可解" if r["ok"] else "存在问题")
+            print("failed          :", r["failed"])
+        print("结果            :", "全部可解" if r["ok"] else "存在问题")
         sys.exit(0 if r["ok"] else 1)
     elif "--info" in sys.argv:
         r = verify_envelopes()
@@ -1420,8 +1749,15 @@ if __name__ == "__main__":
         print("master.key    :", os.path.isfile(MASTER_KEY_FILE))
         print("audit vault   :", os.path.isfile(VAULT_FILE))
         print("active kid    :", r.get("activeKid"))
-        print("core.js kid   :", r.get("coreKid"))
-        print("generations   :", r.get("generations"))
+        print("served kid    :", r.get("servedKid"))
+        print("source kid    :", r.get("coreKid"), "(repository baseline)")
+        print("generations   :", r.get("generations"), r.get("generationRefs"))
+        print("auto rotation : %s · 基准 %s 天 · 抖动 ±%d%% · RSA-%d · 保留 %d 代" %
+              ("开" if r.get("autoEnabled") else "关",
+               r.get("intervalDays"), int((r.get("jitter") or 0) * 100),
+               r.get("bits"), r.get("keep")))
+        print("next rotation :", _fmt_ms(r.get("nextRotateAt")))
+        print("rotations     :", r.get("rotationCount"))
         print("envelopes     : %s (opened %s, stale %s)" %
               (r.get("envelopes"), r.get("opened"), r.get("stale")))
         print("legacy backup :", r.get("legacyBackup"))
@@ -1429,4 +1765,4 @@ if __name__ == "__main__":
               r.get("error") or "run --verify for details")
     else:
         print("用法: python audit_vault.py --info | --verify | "
-              "--rotate [--keep-old]")
+              "--rotate [--keep-old] | --rotate-now")
