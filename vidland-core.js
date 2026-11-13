@@ -33,6 +33,10 @@
     n: "txFC9dhh72jmh4xdiKKqMVY3PxjKWxVt4cxNixUiPAklJ8bKDbfAPkgr2B1D-Akh0nDqnYsPItbdVt7DyEVCNVMhBMZejStd0u2z2VIa57Ci3SBqB_p0sWNLRIE4bG6_0d6GGHdPzSx3OpfkCqpqUz7jY9xhYP_Ww8tizZTgR21HA2hacTbjF1BkbyEpDNRg-niOxWBc1zrELjTVCpxGtcWuwri15T-_KrKWadq1MoAF6iM1qHuZ33BR9s_IjLFHdQQs6NQcK0XksHDLFZyA5Y9fF1L7Tmq9XcQtIvjpS_DGMEVOMCtdZUsUZDJxTh22IoSEaufsYqmwkHegDLlJ4w",
     e: "AQAB"
   };
+  /* Fingerprint of modulus||exponent above. Every sealed envelope carries
+     it, so the host can route decryption to the right key generation after
+     a rotation. audit_vault.py --rotate rewrites both constants together. */
+  var PUBLIC_KID = "e0ce861ca4b6c630";
   /* The broadcast seed is no longer shipped with this script. The host
      issues it over the authenticated /api/vault/seed channel, so an
      unapproved device (and the repository) never holds it. vdl:purge
@@ -198,7 +202,7 @@
       aes, enc.encode(JSON.stringify(obj)));
     var ek = await subtle.encrypt({ name: 'RSA-OAEP' }, pub, raw);
     return {
-      v: 1, alg: 'RSA-OAEP-2048/SHA256 + AES-256-GCM',
+      v: 1, kid: PUBLIC_KID, alg: 'RSA-OAEP-2048/SHA256 + AES-256-GCM',
       ek: u8b64(new Uint8Array(ek)), iv: u8b64(iv), ct: u8b64(new Uint8Array(ct))
     };
   }
@@ -2488,7 +2492,7 @@
     sealBroadcast: sealBroadcast, openBroadcast: openBroadcast,
     sealForChancellery: sealForChancellery, openForChancellery: openForChancellery,
     registerAuthorityOpener: registerAuthorityOpener, digestHex: digestHex,
-    publicJwk: PUBLIC_JWK, port: PORT,
+    publicJwk: PUBLIC_JWK, publicKid: PUBLIC_KID, port: PORT,
     /* store */
     Vault: Vault, synchronise: synchronise,
     getSession: getSession, setSession: setSession, clearSession: clearSession,

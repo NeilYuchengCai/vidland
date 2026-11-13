@@ -44,6 +44,7 @@ DATA_DIR = os.path.join(ROOT, "vidland-data")
 VAULT_FILE = os.path.join(DATA_DIR, "audit.vault")
 VAULT_KEY_FILE = os.path.join(DATA_DIR, "audit.key")
 MASTER_KEY_FILE = os.path.join(DATA_DIR, "master.key")
+STORE_FILE = os.path.join(DATA_DIR, "store.json")
 # Legacy builds wrote a random hex passphrase to vidland-data/audit.pass.
 # That file is no longer read: the audit endpoint authenticates by host
 # provenance (loopback socket, Host/Origin checks, DPAPI-signed session).
@@ -172,6 +173,120 @@ def _now():
     return int(time.time() * 1000)
 
 
+# --------------------------------------------------------------------------
+# Chancellery master key ring
+# --------------------------------------------------------------------------
+# master.key used to hold one DPAPI-sealed PEM. It now holds a DPAPI-sealed
+# key ring: {"v":2,"active":<kid>,"keys":[{kid,pem,createdAt}]}. A legacy
+# PEM file is still accepted and treated as a one-generation ring in memory,
+# so an existing installation keeps working without any rewrite.
+MASTER_RING_V = 2
+KID_DOMAIN = b"VDL-MASTER-v1|"
+
+
+def master_kid(n, e):
+    """Stable 16-hex fingerprint of an RSA public key (modulus || exponent)."""
+    nb = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    eb = e.to_bytes((e.bit_length() + 7) // 8, "big")
+    return hashlib.sha256(KID_DOMAIN + nb + eb).hexdigest()[:16]
+
+
+def key_kid(key):
+    return master_kid(key.n, key.e)
+
+
+def load_master_ring(path=None):
+    p = path or MASTER_KEY_FILE
+    if not os.path.isfile(p):
+        return None
+    with open(p, "rb") as f:
+        raw = dpapi_unprotect(f.read())
+    if raw.lstrip().startswith(b"{"):
+        ring = json.loads(raw.decode("utf-8"))
+        if ring.get("v") != MASTER_RING_V or not ring.get("keys"):
+            raise ValueError("master.key 密钥环版本不支持")
+        return ring
+    # Legacy single-PEM format. Compute its kid from the public half so a
+    # sealed envelope produced after this change can still be routed to it.
+    key = RSA.import_key(raw) if CRYPTO_OK else None
+    kid = key_kid(key) if key else "legacy"
+    return {"v": MASTER_RING_V, "active": kid,
+            "keys": [{"kid": kid, "pem": raw.decode("utf-8", "replace"),
+                      "createdAt": 0}]}
+
+
+def save_master_ring(ring, path=None):
+    _atomic_write(path or MASTER_KEY_FILE, dpapi_protect(_json_bytes(ring)))
+
+
+def ring_active_pem(ring):
+    kid = ring.get("active")
+    for item in ring.get("keys", []):
+        if item.get("kid") == kid:
+            return item.get("pem", "")
+    return ring["keys"][-1].get("pem", "")
+
+
+def ring_pem_for(ring, kid):
+    """Fall back to the active key for old envelopes that carry no kid."""
+    for item in ring.get("keys", []):
+        if item.get("kid") == kid:
+            return item.get("pem")
+    return ring_active_pem(ring)
+
+
+def public_jwk_from_core(path=None):
+    """Return (n, e, PUBLIC_KID literal, whole file text)."""
+    p = path or os.path.join(ROOT, "vidland-core.js")
+    with open(p, "r", encoding="utf-8") as f:
+        txt = f.read()
+    m = re.search(r"var\s+PUBLIC_JWK\s*=\s*\{.*?\}\s*;", txt, re.S)
+    if not m:
+        return None, None, None, txt
+    blk = m.group(0)
+    nm = re.search(r"\bn:\s*\"([^\"]+)\"", blk)
+    em = re.search(r"\be:\s*\"([^\"]+)\"", blk)
+    km = re.search(r"var\s+PUBLIC_KID\s*=\s*\"([^\"]+)\"", txt)
+    n = int.from_bytes(_b64u(nm.group(1)), "big") if nm else None
+    e = int.from_bytes(_b64u(em.group(1)), "big") if em else None
+    return n, e, (km.group(1) if km else None), txt
+
+
+def _seal_hybrid(pub, obj, kid):
+    """Re-seal a plaintext business object. Mirrors sealForChancellery() in
+    vidland-core.js: WebCrypto returns ciphertext||tag in `ct`."""
+    raw = secrets.token_bytes(32)
+    iv = secrets.token_bytes(12)
+    c = AES.new(raw, AES.MODE_GCM, nonce=iv, mac_len=16)
+    body, tag = c.encrypt_and_digest(_json_bytes(obj))
+    ek = PKCS1_OAEP.new(pub, hashAlgo=SHA256).encrypt(raw)
+    b64 = lambda b: base64.urlsafe_b64encode(b).decode("ascii").rstrip("=")
+    return {"v": 1, "kid": kid,
+            "alg": "RSA-OAEP-2048/SHA256 + AES-256-GCM",
+            "ek": b64(ek), "iv": b64(iv), "ct": b64(body + tag)}
+
+
+def _open_hybrid(pem, env):
+    key = RSA.import_key(pem)
+    raw = PKCS1_OAEP.new(key, hashAlgo=SHA256).decrypt(_b64u(env["ek"]))
+    ct = _b64u(env["ct"])
+    c = AES.new(raw, AES.MODE_GCM, nonce=_b64u(env["iv"]), mac_len=16)
+    return json.loads(c.decrypt_and_verify(ct[:-16], ct[-16:]).decode("utf-8"))
+
+
+def service_port_in_use():
+    """A rotation must never race a live server: it holds the old private key
+    in memory while new pages would start sealing with the new public key."""
+    import socket
+    port = int(os.environ.get("VDL_PORT", "7431"))
+    s = socket.socket()
+    s.settimeout(0.35)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        s.close()
+
+
 def _ua_hash(ua):
     return hashlib.sha256((ua or "").encode("utf-8")).hexdigest()[:32]
 
@@ -221,6 +336,8 @@ class AuditVault:
         # host can obtain one, and cookies die when the service restarts.
         self.session_key = hmac.new(self.vault_key, b"vdl-audit-session-v1",
                                     hashlib.sha256).digest()
+        self.master_ring = None
+        self._rsa_kid = None
         self.master_pem = self._load_or_create_master()
         self._verify_master()
         self.db = self._load_db()
@@ -248,18 +365,8 @@ class AuditVault:
         """Read the fixed public JWK shipped to every terminal, so a migrated
         private key can be verified against it instead of being trusted blind."""
         try:
-            with open(os.path.join(ROOT, "vidland-core.js"), "r",
-                      encoding="utf-8") as f:
-                txt = f.read()
-            m = re.search(r"var\s+PUBLIC_JWK\s*=\s*\{(.*?)\}\s*;", txt, re.S)
-            if not m:
-                return None
-            n = re.search(r"\bn:\s*\"([^\"]+)\"", m.group(1))
-            e = re.search(r"\be:\s*\"([^\"]+)\"", m.group(1))
-            if not (n and e):
-                return None
-            return (int.from_bytes(_b64u(n.group(1)), "big"),
-                    int.from_bytes(_b64u(e.group(1)), "big"))
+            n, e, _kid, _txt = public_jwk_from_core()
+            return (n, e) if n is not None and e is not None else None
         except Exception:
             return None
 
@@ -290,9 +397,13 @@ class AuditVault:
         The plaintext JWK never lands on disk: it is parsed in memory,
         converted to PEM, DPAPI-sealed, and written out. Candidates are
         checked against the public JWK in vidland-core.js before use."""
-        if os.path.isfile(MASTER_KEY_FILE):
-            with open(MASTER_KEY_FILE, "rb") as f:
-                return dpapi_unprotect(f.read())
+        ring = load_master_ring()
+        if ring:
+            self.master_ring = ring
+            pem = ring_active_pem(ring)
+            if not pem:
+                raise RuntimeError("master.key 密钥环中没有可用私钥")
+            return pem.encode("utf-8") if isinstance(pem, str) else pem
         pub = self._public_jwk_from_core()
         for text in self._candidate_master_texts():
             m = re.search(r"var\s+PRIVATE_JWK\s*=\s*(\{.*?\})\s*;", text, re.S)
@@ -319,7 +430,12 @@ class AuditVault:
                 pem = key.export_key(format="PEM")
             except Exception:
                 continue
-            _atomic_write(MASTER_KEY_FILE, dpapi_protect(pem))
+            kid = key_kid(key)
+            self.master_ring = {"v": MASTER_RING_V, "active": kid,
+                                "keys": [{"kid": kid,
+                                          "pem": pem.decode("utf-8"),
+                                          "createdAt": _now()}]}
+            save_master_ring(self.master_ring)
             print("  [audit] 主私钥已从页面迁移到本机加密文件，"
                   "并与 core.js 公钥核对一致。", flush=True)
             return pem
@@ -333,10 +449,15 @@ class AuditVault:
         restored master.key.old after a rotation."""
         try:
             key = RSA.import_key(self.master_pem)
-            pub = self._public_jwk_from_core()
-            if pub and (key.n, key.e) != pub:
+            n, e, kid, _txt = public_jwk_from_core()
+            if n is not None and (key.n, key.e) != (n, e):
                 print("  [audit] 警告: master.key 与 core.js 的 PUBLIC_JWK "
                       "不一致，新提交的密封详情将无法解开。", flush=True)
+                return
+            active = (self.master_ring or {}).get("active")
+            if kid and active and kid != active:
+                print("  [audit] 警告: core.js 的 PUBLIC_KID 与 master.key "
+                      "活动密钥代不一致，请核对或执行一次 --verify。", flush=True)
         except Exception:
             pass
 
@@ -414,11 +535,21 @@ class AuditVault:
     # ---- Chancellery envelope -------------------------------------------
     def open_envelope(self, env):
         """Server-side hybrid decryption. The RSA private key never leaves
-        this process; the caller receives only plaintext JSON."""
+        this process; the caller receives only plaintext JSON. Envelopes
+        carrying a `kid` are routed to that generation of the key ring, so a
+        rotation never makes an older record unreadable."""
         if not CRYPTO_OK:
             raise RuntimeError("PyCryptodome is required for /api/vault/open")
-        if self._rsa_key is None:
-            self._rsa_key = RSA.import_key(self.master_pem)
+        kid = env.get("kid") or (self.master_ring or {}).get("active")
+        pem = (ring_pem_for(self.master_ring, kid) if self.master_ring
+               else self.master_pem)
+        if not pem:
+            raise RuntimeError("NO_PRIVATE_KEY_FOR_KID: %s" % kid)
+        if isinstance(pem, str):
+            pem = pem.encode("utf-8")
+        if self._rsa_key is None or self._rsa_kid != kid:
+            self._rsa_key = RSA.import_key(pem)
+            self._rsa_kid = kid
         raw = PKCS1_OAEP.new(self._rsa_key, hashAlgo=SHA256).decrypt(
             _b64u(env["ek"]))
         iv, ct = _b64u(env["iv"]), _b64u(env["ct"])
@@ -1032,54 +1163,207 @@ class AuditHandler(http.server.BaseHTTPRequestHandler):
         return self.do_OPTIONS()
 
 
-def rotate_master():
-    """Replace the exposed Chancellery key pair with a fresh RSA-2048 pair.
+def rotate_master(keep_old=False, allow_running=False):
+    """Rotate the Chancellery key pair WITHOUT orphaning historical records.
 
-    The old private key was inlined in admin.html in git history, so treat it
-    as public. This command:
-      * backs up the current DPAPI-sealed private key to master.key.old
-        (still encrypted, so historical envelopes remain recoverable),
-      * writes a brand new DPAPI-sealed private key to master.key,
-      * rewrites PUBLIC_JWK in vidland-core.js to the matching public key.
+    The old implementation swapped PUBLIC_JWK and kept the retired private
+    key forever in master.key.old, because every existing `vdl.v1.env.*`
+    envelope was still sealed to the old public key. That meant a rotation
+    never actually retired anything: one more private key had to be guarded,
+    the leaked key from git history stayed useful, and older applications in
+    the Authority failed to decrypt.
 
-    Envelopes sealed with the OLD public key can no longer be opened by the
-    running server; restore master.key.old (and the old PUBLIC_JWK) to read
-    them. Newly submitted applications use the new pair immediately.
+    This version:
+      1. refuses to run while the server is up (it holds the old key in RAM);
+      2. re-seals EVERY historical envelope from the old private key to the
+         new public key, in memory, before publishing the new key;
+      3. writes a versioned key ring, the migrated register and the new
+         PUBLIC_JWK / PUBLIC_KID atomically, with a full rollback on any
+         verification failure;
+      4. deletes master.key.old once the migration is verified, so the old
+         key is genuinely gone from this machine (pass --keep-old to retain
+         it for an out-of-band archive).
+
+    Plaintext business data exists only inside this process during the
+    migration and is never written to disk unencrypted.
     """
-    import shutil
     if not CRYPTO_OK:
         raise RuntimeError("PyCryptodome is required to rotate the key")
-    key = RSA.generate(2048)
-    n = key.n
-    e = key.e
+    if not allow_running and service_port_in_use():
+        raise RuntimeError(
+            "检测到政务服务仍在运行。请先停止服务再轮换"
+            "（python quickstart.py stop），否则服务端仍持有旧私钥，"
+            "而新页面已经开始用新公钥加密。")
+
+    core_path = os.path.join(ROOT, "vidland-core.js")
+    ring = load_master_ring()
+    if not ring:
+        raise RuntimeError("找不到 master.key。请先启动一次服务完成主私钥迁移。")
+
+    # Exact original bytes, so any failure can restore all three files.
+    with open(MASTER_KEY_FILE, "rb") as f:
+        master_before = f.read()
+    with open(core_path, "rb") as f:
+        core_before = f.read()
+    store_before = None
+    if os.path.isfile(STORE_FILE):
+        with open(STORE_FILE, "rb") as f:
+            store_before = f.read()
+
+    n_e = public_jwk_from_core(core_path)
+    if n_e[0] is None:
+        raise RuntimeError("vidland-core.js 中未找到 PUBLIC_JWK，未做任何改动")
+    core_text = n_e[3]
+
+    old_key = RSA.import_key(ring_active_pem(ring))
+    old_kid = key_kid(old_key)
+    new_key = RSA.generate(2048)
+    new_kid = key_kid(new_key)
 
     def b64u_int(i):
         raw = i.to_bytes((i.bit_length() + 7) // 8, "big")
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
-    core = os.path.join(ROOT, "vidland-core.js")
-    with open(core, "r", encoding="utf-8") as f:
-        txt = f.read()
+    # ---- 1. Re-seal every stored envelope -------------------------------
+    store = (json.loads(store_before.decode("utf-8")) if store_before
+             else {"rev": 0, "data": {}})
+    data = store.get("data", {})
+    if not isinstance(data, dict):
+        raise RuntimeError("store.json 结构异常（data 不是对象），未做任何改动")
+    migrated, proof = 0, []
+    for k in list(data.keys()):
+        if not k.startswith("vdl.v1.env."):
+            continue
+        try:
+            env = json.loads(data[k])
+            payload = env.get("payload") or {}
+            if not payload.get("ek"):
+                continue
+            pem = ring_pem_for(ring, payload.get("kid") or old_kid)
+            plain = _open_hybrid(pem, payload)
+            env["payload"] = _seal_hybrid(new_key.publickey(), plain, new_kid)
+            data[k] = json.dumps(env, ensure_ascii=False)
+            proof.append((k, env["payload"], plain))
+            migrated += 1
+        except Exception as exc:
+            raise RuntimeError("信封 %s 迁移失败，未做任何改动：%s" % (k, exc))
+
+    # ---- 2. Publish the new generation ----------------------------------
+    new_ring = {"v": MASTER_RING_V, "active": new_kid,
+                "keys": [{"kid": new_kid,
+                          "pem": new_key.export_key(format="PEM").decode("ascii"),
+                          "createdAt": _now()}]}
     block = ('var PUBLIC_JWK = {\n'
              '    kty: "RSA",\n'
              '    n: "%s",\n'
              '    e: "%s"\n'
-             '  };' % (b64u_int(n), b64u_int(e)))
+             '  };' % (b64u_int(new_key.n), b64u_int(new_key.e)))
     txt2, count = re.subn(r"var\s+PUBLIC_JWK\s*=\s*\{.*?\}\s*;",
-                          block, txt, count=1, flags=re.S)
+                          lambda m: block, core_text, count=1, flags=re.S)
     if count != 1:
         raise RuntimeError("vidland-core.js 中未找到 PUBLIC_JWK，未做任何改动")
-    if os.path.isfile(MASTER_KEY_FILE):
-        shutil.copy2(MASTER_KEY_FILE, MASTER_KEY_FILE + ".old")
-    with open(core, "w", encoding="utf-8", newline="\n") as f:
-        f.write(txt2)
-    _atomic_write(MASTER_KEY_FILE, dpapi_protect(key.export_key(format="PEM")))
+    kid_line = '  var PUBLIC_KID = "%s";' % new_kid
+    if re.search(r"var\s+PUBLIC_KID\s*=\s*\"[^\"]+\"\s*;", txt2):
+        txt2 = re.sub(r"var\s+PUBLIC_KID\s*=\s*\"[^\"]+\"\s*;",
+                      lambda m: kid_line, txt2, count=1)
+    else:
+        txt2 = txt2.replace(block, block + "\n" + kid_line, 1)
+
+    def rollback(cause):
+        _atomic_write(MASTER_KEY_FILE, master_before)
+        if store_before is None:
+            if os.path.isfile(STORE_FILE):
+                os.remove(STORE_FILE)
+        else:
+            _atomic_write(STORE_FILE, store_before)
+        _atomic_write(core_path, core_before)
+        raise RuntimeError("轮换校验失败，已回滚到原状态：%s" % cause)
+
+    try:
+        save_master_ring(new_ring)
+        if store_before is not None:
+            store["data"] = data
+            store["rev"] = int(store.get("rev", 0)) + 1
+            _atomic_write(STORE_FILE,
+                          json.dumps(store, ensure_ascii=False).encode("utf-8"))
+        _atomic_write(core_path, txt2.encode("utf-8"))
+    except Exception as exc:
+        rollback(str(exc))
+
+    # ---- 3. Verify before destroying the old generation ------------------
+    try:
+        check_ring = load_master_ring()
+        check_pem = ring_active_pem(check_ring)
+        for key, payload, plain in proof:
+            if _open_hybrid(check_pem, payload) != plain:
+                raise RuntimeError("信封 %s 重封后明文不一致" % key)
+        cn, ce, ck, _ = public_jwk_from_core(core_path)
+        if (cn, ce) != (new_key.n, new_key.e) or ck != new_kid:
+            raise RuntimeError("core.js 公钥与 master.key 不一致")
+    except Exception as exc:
+        rollback(str(exc))
+
+    # ---- 4. The retired key is now useless here: destroy the backup -----
+    old_backup = MASTER_KEY_FILE + ".old"
+    destroyed = False
+    if not keep_old and os.path.isfile(old_backup):
+        os.remove(old_backup)
+        destroyed = True
+
     print("  已生成新的 Chancellery RSA-2048 密钥对。", flush=True)
-    print("  新公钥已写入 vidland-core.js，新私钥已 DPAPI 封装到 master.key。",
+    print("  密钥代: %s -> %s" % (old_kid, new_kid), flush=True)
+    print("  已重封历史密封信封: %d 份，全部校验通过。" % migrated, flush=True)
+    print("  新公钥 / kid 已写入 vidland-core.js；新私钥只保留在 "
+          "DPAPI 封装的 master.key 密钥环中。", flush=True)
+    if destroyed:
+        print("  已删除旧私钥备份 master.key.old（当前登记册不再需要它）。",
+              flush=True)
+    elif os.path.isfile(old_backup):
+        print("  按 --keep-old 保留了 master.key.old；请自行离线保管或销毁。",
+              flush=True)
+    print("  请重启服务并刷新所有终端页面；旧页面缓存的公钥会在刷新后更新。",
           flush=True)
-    print("  旧私钥加密备份: %s" % (MASTER_KEY_FILE + ".old"), flush=True)
-    print("  注意: 旧公钥密封的历史信封需用备份私钥才能打开；"
-          "请刷新所有终端页面以加载新公钥。", flush=True)
+    return {"oldKid": old_kid, "newKid": new_kid,
+            "migrated": migrated, "oldBackupDestroyed": destroyed}
+
+
+def verify_envelopes():
+    """Read-only health check: does the shipped public key match the key ring,
+    and can every stored envelope still be opened?"""
+    ring = load_master_ring()
+    if not ring:
+        return {"ok": False, "error": "master.key 不存在"}
+    active = ring.get("active")
+    n, e, core_kid, _txt = public_jwk_from_core()
+    core_matches = (n is not None and master_kid(n, e) == active
+                    and (core_kid is None or core_kid == active))
+    total = opened = stale = 0
+    failed = []
+    if os.path.isfile(STORE_FILE):
+        with open(STORE_FILE, "r", encoding="utf-8") as f:
+            reg = json.load(f)
+        for k, v in (reg.get("data") or {}).items():
+            if not k.startswith("vdl.v1.env."):
+                continue
+            total += 1
+            try:
+                env = json.loads(v)
+                payload = env.get("payload") or {}
+                if not payload.get("ek"):
+                    continue
+                _open_hybrid(ring_pem_for(ring, payload.get("kid")), payload)
+                opened += 1
+                if payload.get("kid") and payload["kid"] != active:
+                    stale += 1
+            except Exception as exc:
+                failed.append({"key": k, "error": str(exc)[:140]})
+    return {"ok": core_matches and not failed,
+            "activeKid": active, "coreKid": core_kid,
+            "coreMatches": core_matches,
+            "generations": len(ring.get("keys", [])),
+            "envelopes": total, "opened": opened, "stale": stale,
+            "failed": failed,
+            "legacyBackup": os.path.isfile(MASTER_KEY_FILE + ".old")}
 
 
 VAULT = None
@@ -1118,12 +1402,31 @@ def start_audit_server(port):
 if __name__ == "__main__":
     import sys
     if "--rotate" in sys.argv:
-        rotate_master()
+        rotate_master(keep_old="--keep-old" in sys.argv)
+    elif "--verify" in sys.argv:
+        r = verify_envelopes()
+        for k in ("ok", "activeKid", "coreKid", "coreMatches", "generations",
+                  "envelopes", "opened", "stale", "legacyBackup"):
+            print("%-14s: %s" % (k, r.get(k)))
+        if r.get("failed"):
+            print("failed        :", r["failed"])
+        print("结果          :", "全部可解" if r["ok"] else "存在问题")
+        sys.exit(0 if r["ok"] else 1)
     elif "--info" in sys.argv:
+        r = verify_envelopes()
         print("key mode      :", KEY_MODE)
         print("crypto        :", CRYPTO_OK)
         print("authentication: no passphrase (loopback + Host/Origin proof + signed session)")
         print("master.key    :", os.path.isfile(MASTER_KEY_FILE))
         print("audit vault   :", os.path.isfile(VAULT_FILE))
+        print("active kid    :", r.get("activeKid"))
+        print("core.js kid   :", r.get("coreKid"))
+        print("generations   :", r.get("generations"))
+        print("envelopes     : %s (opened %s, stale %s)" %
+              (r.get("envelopes"), r.get("opened"), r.get("stale")))
+        print("legacy backup :", r.get("legacyBackup"))
+        print("health        :", "OK" if r.get("ok") else
+              r.get("error") or "run --verify for details")
     else:
-        print("用法: python audit_vault.py --rotate | --info")
+        print("用法: python audit_vault.py --info | --verify | "
+              "--rotate [--keep-old]")
