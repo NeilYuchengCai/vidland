@@ -124,6 +124,7 @@
   var draftCache = { values: null, bio: null };
   var instrumentViewed = false;
   var _seq = 0, lastState = null;
+  var _submitting = false;      /* guards against double-click / double submit */
 
   var UI = V.init('portal', function () { render(); });
 
@@ -466,6 +467,7 @@
 
   /* ---------- actions ---------- */
   function openForm(stage, round, continuationOf) {
+    _submitting = false;
     formApi = null;
     view = { type: 'form', stage: stage, round: round || 1, continuationOf: continuationOf || null };
     draftCache = { values: null, bio: null };
@@ -479,11 +481,14 @@
   }
 
   async function submitForm() {
+    if (_submitting) return;
     if (!formApi || !view) return;
     if (!formApi.validate()) { formApi.focusFirstError(); return; }
     if (view.stage === 'NAT' && !instrumentViewed) {
       V.toast(t('p.form.readInstrument'), 'bad'); return;
     }
+    _submitting = true;
+    try {
     var vals = formApi.values(), bio = formApi.biometrics();
     var ref = V.getSession(), at = V.now();
     var identity = {
@@ -514,6 +519,7 @@
     }
     closeForm();
     V.toast(t('p.form.submitted'), 'good');
+    } finally { _submitting = false; }
   }
 
   async function initStage(stage) {

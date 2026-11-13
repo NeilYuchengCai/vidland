@@ -30,11 +30,33 @@
      ------------------------------------------------------------ */
   var PUBLIC_JWK = {
     kty: "RSA",
-    n: "pD8cDO-qfdtwY817wi9kpyxL56OxZyO8GiGZq8Z_jOIDEVF9x-ELcWGNhuJWt8wrOn8wwn4cNJf1qaqdvzj81RXqkiJPU0qeu0sfqzy2yrft95InptJKN2CvwCTUcPzdwB-C-Iw5m_ooO2KSig5nM8vUbw-ZTtlHg10YQl6UXuw3PDOHYOqp_PBUHGg5bP3lqWWmF4MymxjkY4BShlqSBl809S1O4SVkwmebhNFYj6813Ulj23Ea60nExEVejEacqzuqJC0bxzTORZ4knplK75QI8SyRO4x-_vgfVLQbbYEA5jzhdpKN5BUGFM5VWX0ttjefcRUFo11vIGnbq4N8CQ",
+    n: "txFC9dhh72jmh4xdiKKqMVY3PxjKWxVt4cxNixUiPAklJ8bKDbfAPkgr2B1D-Akh0nDqnYsPItbdVt7DyEVCNVMhBMZejStd0u2z2VIa57Ci3SBqB_p0sWNLRIE4bG6_0d6GGHdPzSx3OpfkCqpqUz7jY9xhYP_Ww8tizZTgR21HA2hacTbjF1BkbyEpDNRg-niOxWBc1zrELjTVCpxGtcWuwri15T-_KrKWadq1MoAF6iM1qHuZ33BR9s_IjLFHdQQs6NQcK0XksHDLFZyA5Y9fF1L7Tmq9XcQtIvjpS_DGMEVOMCtdZUsUZDJxTh22IoSEaufsYqmwkHegDLlJ4w",
     e: "AQAB"
   };
-  /* Fixed high-strength passphrase for the sealed broadcast channel. */
-  var BROADCAST_SEED = "86089f14dc5efccc9db5793f87777cf683c883536fceaaa67012823b970f08e9";
+  /* The broadcast seed is no longer shipped with this script. The host
+     issues it over the authenticated /api/vault/seed channel, so an
+     unapproved device (and the repository) never holds it. vdl:purge
+     clears it from memory when access is cut. */
+  var BROADCAST_SEED = null;
+  var _seedReady = null, _seedPurged = false;
+  function fetchBroadcastSeed() {
+    /* Asynchronous on purpose: a synchronous XHR here blocks parsing and
+       rendering of the whole terminal right after an approval, which is
+       exactly the visible stutter. Every consumer of the seed is async
+       (sealBroadcast / openBroadcast), so awaiting this promise is enough. */
+    try {
+      _seedReady = global.fetch('/api/vault/seed',
+        { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (!_seedPurged && j && j.ok && j.seed) BROADCAST_SEED = j.seed;
+        })
+        .catch(function () {});
+    } catch (e) {
+      _seedReady = Promise.resolve();
+    }
+  }
+  fetchBroadcastSeed();
   var SALT = enc.encode("VDL::GRAND-DUCAL-CHANCELLERY::CIVIL-REGISTER::v1::SALT::5f2a91");
   var PORT = 7431;
 
@@ -49,6 +71,54 @@
      lodging a petition at the same instant can no longer overwrite one
      another's entry in a shared inbox array. */
   var ENV_PREFIX = 'vdl.v1.env.';
+  /* One "in progress" marker per device + terminal + TAB. It is written
+     when an inspection starts and removed only when a finding is submitted.
+     If that tab is reloaded after an interruption, its marker is still there
+     and is turned into a FAIL finding. No timers are involved: as long as
+     the server is up and the page stays connected, a walk may take as long
+     as it needs. */
+  var ACTIVE_PREFIX = 'vdl.v1.insp.active.';
+  var DEVICE_KEY = 'vdl.v1.device.id';
+  function deviceId() {
+    var v = null;
+    try { v = global.localStorage.getItem(DEVICE_KEY); } catch (e) {}
+    if (!v) {
+      v = uid('DEV');
+      try { global.localStorage.setItem(DEVICE_KEY, v); } catch (e) {}
+    }
+    return v;
+  }
+
+  /* ---- tab identity --------------------------------------------------
+     A tab id lives in sessionStorage: private to this tab, retained across
+     a reload (so a reload is still recognised as an interruption) and gone
+     when the tab closes. Two tabs of the same station on one device get two
+     different ids and therefore two independent walks. */
+  var TAB_KEY = 'vdl.v1.tab.id';
+  var TAB_ALIVE_PREFIX = 'vdl.v1.tab.alive.';
+  function tabId() {
+    var v = null;
+    try { v = global.sessionStorage.getItem(TAB_KEY); } catch (e) {}
+    if (!v) {
+      v = uid('TAB');
+      try { global.sessionStorage.setItem(TAB_KEY, v); } catch (e) {}
+    }
+    return v;
+  }
+  /* One localStorage key per live tab, so concurrent tabs never overwrite
+     one another's presence flag. These are lifecycle events (mount /
+     pagehide), not a heartbeat and not a timeout: a walk may run
+     indefinitely while its tab stays open. */
+  function tabAliveKey(tid) { return TAB_ALIVE_PREFIX + deviceId() + '.' + tid; }
+  function tabRegister(tid) {
+    try { global.localStorage.setItem(tabAliveKey(tid), '1'); } catch (e) {}
+  }
+  function tabUnregister(tid) {
+    try { global.localStorage.removeItem(tabAliveKey(tid)); } catch (e) {}
+  }
+  function tabAlive(tid) {
+    try { return global.localStorage.getItem(tabAliveKey(tid)) === '1'; } catch (e) { return false; }
+  }
 
   /* ------------------------------------------------------------
      1 · Encoding helpers
@@ -89,6 +159,8 @@
   function broadcastKey() {
     if (!_broadcastKey) {
       _broadcastKey = (async function () {
+        if (_seedReady) await _seedReady;
+        if (!BROADCAST_SEED) throw new Error('Broadcast seed not issued by host');
         var base = await subtle.importKey('raw', enc.encode(BROADCAST_SEED),
           { name: 'PBKDF2' }, false, ['deriveKey']);
         return subtle.deriveKey(
@@ -244,9 +316,11 @@
       var fixed = false;
       (s.applications || []).forEach(function (a) {
         if (a.status === 'APPROVE') { a.status = 'APPROVED'; fixed = true; }
+        if (a.status === 'REJECT') { a.status = 'REJECTED'; fixed = true; }
       });
       (s.leaps || []).forEach(function (l) {
         if (l.status === 'APPROVE') { l.status = 'APPROVED'; fixed = true; }
+        if (l.status === 'REJECT') { l.status = 'REJECTED'; fixed = true; }
       });
       if (fixed) await writeState(s);
       return s;
@@ -444,7 +518,12 @@
     async mutate(fn) {
       var s = await synchronise();
       var r = fn(s);
-      if (r !== false) await writeState(s);
+      if (r !== false) {
+        /* Discretionary Authority acts are not part of the event log, so a
+           stale revision must never silently overwrite a newer register. */
+        if (LS.setStateGuard) LS.setStateGuard(true);
+        await writeState(s);
+      } else if (LS.setStateGuard) LS.setStateGuard(false);
       announce(TERMINAL);
       fire();
       return s;
@@ -1691,12 +1770,22 @@
   var _renderFn = null;
   function init(page, renderFn) {
     if (global.location && /[?&]reset\b/.test(global.location.search || '')) {
-      if (LS.reset) LS.reset();
-      else { try { Object.keys(global.localStorage).forEach(function (k) {
-        if (k.indexOf('vdl.v1.') === 0) { try { LS.removeItem(k); } catch (e) {} }
-      }); } catch (e) {} }
-      global.location.replace((global.location.pathname || '/') + (global.location.hash || ''));
-      return { paintChrome: function () {}, refresh: function () {} };
+      /* A bare query parameter must never destroy the sealed register on
+         its own (a bookmark, a shared link or a mistyped URL would do it).
+         Require an explicit confirmation in the current UI language. */
+      var clean = (global.location.pathname || '/') + (global.location.hash || '');
+      confirmDialog(t('a.reset'), esc(t('m.sys.purgeAsk')), function () {
+        if (LS.reset) LS.reset();
+        else { try {
+          [global.localStorage, global.sessionStorage].forEach(function (store) {
+            Object.keys(store || {}).forEach(function (k) {
+              if (k.indexOf('vdl.v1.') === 0) { try { LS.removeItem(k); } catch (e) {} }
+            });
+          });
+        } catch (e) {} }
+        global.location.replace(clean);
+      });
+      /* Fall through: the page stays usable while the dialog is open. */
     }
     setTerminal(page.toUpperCase());
     _renderFn = renderFn || function () {};
@@ -1710,9 +1799,21 @@
       var sel = document.querySelector('[data-langsel]');
       if (sel) sel.addEventListener('change', function () { I.setLang(this.value); });
     }
+    /* The subbar shows the currently selected subject reference. A switch
+       through "核验身份" (or a switch broadcast from another tab of this
+       device) must refresh it as well, otherwise the header keeps showing
+       the previous file number while the file card below already shows the
+       new one. Only this one text node is touched: rebuilding the chrome on
+       every register update would re-bind the language selector repeatedly. */
+    function syncSubRef() {
+      var el = document.querySelector('[data-subref]');
+      if (!el) return;
+      var r = getSession();
+      if (el.textContent !== r) el.textContent = r;
+    }
     paintChrome();
     global.addEventListener('vdl:lang', function () { paintChrome(); _renderFn(); });
-    Vault.on(function () { _renderFn(); });
+    Vault.on(function () { syncSubRef(); _renderFn(); });
     /* Real-time cross-terminal sync: poll the on-disk register revision. */
     LS.startSync();
     LS.onExternalChange(function () {
@@ -1790,14 +1891,53 @@
     var page = opts.page || 'BORDER';
     var KEY = 'vdl.v1.runner.' + page;
     var GK = 'vdl.v1.runner.' + page + '.graded';
+    /* Per device AND per terminal AND per TAB. Opening a second tab of the
+       same station on one device must neither see nor retire the first
+       tab's walk; opening the Interior station must not touch a Frontier
+       walk either. Old builds keyed this by device + terminal only. */
+    var TAB = tabId();
+    tabRegister(TAB);
+    var ACTIVE_KEY = ACTIVE_PREFIX + deviceId() + '.' + page + '.' + TAB;
+    var LEGACY_ACTIVE_KEY = ACTIVE_PREFIX + deviceId() + '.' + page;
+    var ACTIVE_FLAG = KEY + '.active';
+    var INTERRUPT_FLAG = KEY + '.interrupted';
     var st = {
       refInput: '', ref: null, verified: false, subject: null,
       level: levels[0], protocol: [], idx: 0, attested: false,
       running: false, finished: false, outcome: null, grade: null,
       certCode: null, issuedAt: null, ts: null, steps: [], purpose: '',
-      log: []
+      activeId: null, startedAt: null, log: []
     };
     var currentState = null;
+
+    /* Synchronous tab-local flags survive a reload, and a shared "in
+       progress" marker survives the tab going away. Routing through LS
+       (rather than touching localStorage directly) is what keeps these
+       flags in sessionStorage, private to this tab. Neither uses a timer:
+       a walk can run indefinitely as long as the connection stays up. */
+    function localFlagSet(k, on) {
+      try {
+        if (on) LS.setItem(k, '1');
+        else LS.removeItem(k);
+      } catch (e) {}
+    }
+    function localFlag(k) {
+      try { return !!LS.getItem(k); } catch (e) { return false; }
+    }
+    function clearActive() {
+      try { LS.removeItem(ACTIVE_KEY); } catch (e) {}
+      localFlagSet(ACTIVE_FLAG, false);
+      localFlagSet(INTERRUPT_FLAG, false);
+    }
+    function writeActive() {
+      sealBroadcast({
+        id: st.activeId, ref: st.ref, level: st.level, purpose: st.purpose,
+        startedAt: st.startedAt, steps: (st.protocol || []).length,
+        subject: st.subject || {}, page: page, tab: TAB
+      }).then(function (env) {
+        LS.setItem(ACTIVE_KEY, JSON.stringify(env));
+      }).catch(function () {});
+    }
 
     function gradedSet() { try { return JSON.parse(LS.getItem(GK) || '{}'); } catch (e) { return {}; } }
     function markGraded(c) { var g = gradedSet(); g[c] = true; try { LS.setItem(GK, JSON.stringify(g)); } catch (e) {} }
@@ -2084,7 +2224,11 @@
       st.purpose = p ? p.purpose : 'GENERAL';
       st.running = true; st.finished = false; st.idx = 0; st.attested = false;
       st.steps = []; st.grade = null; st.certCode = null; st.outcome = null;
+      st.activeId = uid('INA'); st.startedAt = now();
       st.subject = snapSubject(currentState, st.ref);
+      localFlagSet(ACTIVE_FLAG, true);
+      localFlagSet(INTERRUPT_FLAG, false);
+      writeActive();
       save(); paint();
     }
     function confirmStep() {
@@ -2102,28 +2246,102 @@
         status: 'ABORTED', at: now() });
       finish('ABORTED');
     }
-    function finish(outcome) {
+    function finish(outcome, forcedCode, reason) {
       st.running = false; st.finished = true; st.outcome = outcome;
       st.issuedAt = now(); st.ts = tsRecord(st.issuedAt);
-      st.certCode = code('VDL-SEC-' + st.level);
+      st.certCode = forcedCode || code('VDL-SEC-' + st.level);
       st.grade = outcome === 'CLEARED' ? 'PASS' : outcome === 'ABORTED' ? 'FAIL' : null;
       var meta = {
         type: 'INSPECTION', id: uid('INS'), ref: st.ref, level: st.level,
         purpose: st.purpose, outcome: outcome, certCode: st.certCode,
-        steps: st.steps.slice(), subject: st.subject, ts: st.ts, at: st.issuedAt
+        steps: st.steps.slice(), subject: st.subject, ts: st.ts, at: st.issuedAt,
+        interrupted: !!reason, interruptReason: reason || null
       };
+      /* A submitted finding is the ONLY thing that retires the marker. */
+      clearActive();
       save();
-      Vault.submit(meta, Object.assign({}, meta, { terminal: page, protocolLength: st.protocol.length }))
+      var submitted = Vault.submit(meta,
+        Object.assign({}, meta, { terminal: page, protocolLength: st.protocol.length }))
         .then(function () {
           sync();
           if (outcome !== 'PENDING_GRADE') download(st.grade);
           else V_toast(t('i.awaitGrade'), 'good');
+          /* The instrument is produced on this device. If the register is
+             unreachable, do not let a local "cleared" screen imply that the
+             Authority has already received the record. */
+          setTimeout(function () {
+            try {
+              var S = global.VidlandStore;
+              if (S && S.isOnline && (!S.isOnline() || (S.pendingWrites && S.pendingWrites() > 0))) {
+                V_toast(t('i.pendingFiling'), 'bad');
+              }
+            } catch (e) {}
+          }, 500);
         });
       paint();
+      return submitted;
+    }
+    /* An inspection that started but never submitted a finding is a FAIL,
+       whatever stopped it: lost connection, server outage, reload, closed
+       tab, killed process or the operator abandoning the walk. The code is
+       derived from the active record id, so replaying the finding is
+       idempotent even when several terminals detect the same interruption. */
+    function failInterrupted(reason, record) {
+      if (st.finished) return Promise.resolve();
+      var sp = (st.protocol || [])[st.idx];
+      if (sp) st.steps.push({ title: Object.assign({}, sp.title),
+        detail: Object.assign({}, sp.detail), status: 'ABORTED', at: now() });
+      st.running = false;
+      if (record) {
+        if (!st.ref && record.ref) st.ref = record.ref;
+        if (record.level) st.level = record.level;
+        if (record.subject) st.subject = record.subject;
+        if (record.purpose) st.purpose = record.purpose;
+      }
+      var rid = (record && record.id) || st.activeId || ('T' + (st.startedAt || now()));
+      var forced = 'VDL-SEC-' + st.level + '-ABORT-' + rid;
+      V_toast(t('i.aborted'), 'bad');
+      return finish('ABORTED', forced, reason);
+    }
+    /* Another tab of this station was closed or killed before submitting.
+       Its marker is still in the shared register, but its runner snapshot
+       lived in that tab's sessionStorage and is gone. File the FAIL finding
+       through the ordinary uplink WITHOUT importing that walk into this
+       tab's state, then retire only that one marker. The document number is
+       derived from the abandoned record id, so a retry is idempotent
+       (alreadyApplied() matches on certCode). */
+    function retireOrphan(key, env) {
+      return openBroadcast(env).catch(function () { return null; }).then(function (rec) {
+        if (!rec) {
+          try { LS.removeItem(key); } catch (e) {}
+          return;
+        }
+        var level = rec.level || levels[0];
+        var rid = rec.id || ('T' + (rec.startedAt || now()));
+        var at = now();
+        var meta = {
+          type: 'INSPECTION', id: uid('INS'), ref: rec.ref || '', level: level,
+          purpose: rec.purpose || 'GENERAL', outcome: 'ABORTED',
+          certCode: 'VDL-SEC-' + level + '-ABORT-' + rid,
+          steps: [], subject: rec.subject || {}, ts: tsRecord(at), at: at,
+          interrupted: true, interruptReason: 'interrupted'
+        };
+        return Vault.submit(meta, Object.assign({}, meta, {
+          terminal: page, protocolLength: rec.steps || 0, retiredTab: rec.tab || null
+        })).then(function () {
+          try { LS.removeItem(key); } catch (e) {}
+        }).catch(function (e) {
+          /* Leave the marker in place: the next page load retries, and the
+             derived document number prevents a duplicate finding. */
+          console.warn('[Inspection] abandoned walk not yet filed', e);
+        });
+      });
     }
     function restart() {
+      clearActive();
       st.running = false; st.finished = false; st.outcome = null; st.grade = null;
       st.certCode = null; st.issuedAt = null; st.ts = null; st.steps = [];
+      st.activeId = null; st.startedAt = null;
       st.idx = 0; st.attested = false; st.log = [];
       save(); paint();
     }
@@ -2148,7 +2366,11 @@
       else if (a === 'start') start();
       else if (a === 'confirm') confirmStep();
       else if (a === 'abort') confirmDialog(t('i.abort'), esc(t('i.abortConfirm')), abort);
-      else if (a === 'restart') restart();
+      else if (a === 'restart') {
+        /* Restarting an unfinished walk is itself an interruption. */
+        if (st.running && !st.finished) failInterrupted('restart');
+        else restart();
+      }
       else if (a === 'download') download(st.grade);
     });
     root.addEventListener('input', function (e) {
@@ -2161,9 +2383,99 @@
     Vault.on(function () { sync(); });
     global.addEventListener('vdl:lang', function () { paint(); });
 
+    /* ---- interruption detection -------------------------------------
+       No timers, no heartbeat, no background/visibility rules: switching
+       tabs, locking the screen or taking a long time is fine as long as the
+       register stays reachable. Only a broken connection, a server outage
+       or the page going away counts as "stopped before submitting". */
+    function onInterrupted(reason) {
+      if (!st.running || st.finished) return;
+      localFlagSet(INTERRUPT_FLAG, true);
+      failInterrupted(reason);
+    }
+    global.addEventListener('offline', function () { onInterrupted('offline'); });
+    global.addEventListener('pagehide', function () {
+      if (st.running && !st.finished) localFlagSet(INTERRUPT_FLAG, true);
+      tabUnregister(TAB);
+    });
+    /* A page restored from the back/forward cache did not re-run mount;
+       re-declare this tab as live so another tab does not mistake its
+       marker for an abandoned walk. This is a lifecycle event, not a
+       heartbeat, and it does not start or reset any inspection timer. */
+    global.addEventListener('pageshow', function () { tabRegister(TAB); });
+    global.addEventListener('vdl:sync', function (e) {
+      if (e && e.detail && e.detail.kind === 'offline') onInterrupted('connection');
+    });
+
     restore().then(function () {
       if (levels.indexOf(st.level) < 0) st.level = levels[0];
       return sync();
+    }).then(function () {
+      /* Enumerate every in-progress marker this device left on this station
+         in the shared register. Each tab owns exactly one key. */
+      var prefix = ACTIVE_PREFIX + deviceId() + '.' + page + '.';
+      var keys = [];
+      try {
+        keys = LS.keys ? LS.keys() : (function () {
+          var a = [], i, k;
+          for (i = 0; i < LS.length; i++) { k = LS.key(i); if (k) a.push(k); }
+          return a;
+        })();
+      } catch (e) {}
+      var mineKey = null, mineEnv = null, orphans = [];
+      keys.forEach(function (k) {
+        /* Pre-tab builds wrote one device+terminal marker. No live page
+           uses that shape any more, so it is always an abandoned walk. */
+        if (k === LEGACY_ACTIVE_KEY) {
+          orphans.push({ key: k, env: rawGet(k, null) });
+          return;
+        }
+        if (k.indexOf(prefix) !== 0) return;
+        var tid = k.slice(prefix.length);
+        var env = null;
+        try { env = rawGet(k, null); } catch (e) {}
+        if (tid === TAB) { mineKey = k; mineEnv = env; }
+        else if (!tabAlive(tid)) orphans.push({ key: k, env: env });
+        /* A tab still registered as live is running its own walk: leave
+           both its marker and its progress completely alone. */
+      });
+
+      var steps = [];
+      /* A completed walk may leave a stale marker if the process died just
+         after finishing; retire OUR OWN marker instead of issuing a second
+         FAIL. Never clear another tab's marker here. */
+      if (st.finished) {
+        steps.push(function () {
+          /* clearActive() removes exactly ACTIVE_KEY (this tab's key) and
+             this tab's flags; it cannot touch another tab's marker. */
+          if (mineKey || localFlag(ACTIVE_FLAG) || localFlag(INTERRUPT_FLAG)) clearActive();
+        });
+      } else {
+        var interrupted = st.running || localFlag(INTERRUPT_FLAG) ||
+                          localFlag(ACTIVE_FLAG) || !!mineKey;
+        if (interrupted) {
+          steps.push(function () {
+            var recP = mineEnv ? openBroadcast(mineEnv).catch(function () { return null; })
+                              : Promise.resolve(null);
+            return recP.then(function (rec) {
+              return failInterrupted('interrupted', rec);
+            }).then(function () { return sync(); });
+          });
+        }
+      }
+      /* Abandoned walks from other tabs are filed as FAIL findings too,
+         without pulling their progress into this tab's runner. */
+      orphans.forEach(function (o) {
+        steps.push(function () {
+          if (o.env) return retireOrphan(o.key, o.env);
+          try { LS.removeItem(o.key); } catch (e) {}
+          return Promise.resolve();
+        });
+      });
+      /* Serialise: each Vault.submit() runs a synchronise() pass, and an
+         already-filed certCode must be visible before the next one is
+         derived. */
+      return steps.reduce(function (p, fn) { return p.then(fn); }, Promise.resolve());
     });
     return { sync: sync, paint: paint, state: st };
   }
@@ -2200,4 +2512,47 @@
     code: code, uid: uid, rand: rand, now: now, terminalId: terminalId,
     t: t, L: L
   };
+
+  /* ------------------------------------------------------------
+     12 · Local erasure when access is cut
+     ------------------------------------------------------------
+     vidland-store.js drops its decrypted mirror and pending writes on a
+     403 and emits vdl:purge. Every terminal must also remove data that is
+     ALREADY rendered. On admin / entry the audit gate draws its own opaque
+     panel, so leave that node alone; on the three civil terminals replace
+     the whole body with a content-free notice. */
+  global.addEventListener('vdl:purge', function () {
+    /* Drop the derived keys as well as the DOM: after a cut nothing in
+       this JS context may still be able to decrypt the register. */
+    _seedPurged = true;
+    BROADCAST_SEED = null;
+    _broadcastKey = null;
+    try {
+      if (!global.document || !global.document.body) return;
+      var body = global.document.body;
+      if (global.document.getElementById('vdl-audit-gate')) return;
+      Array.prototype.slice.call(body.children).forEach(function (el) {
+        try { body.removeChild(el); } catch (e) {}
+      });
+      var cover = global.document.createElement('div');
+      cover.setAttribute('style',
+        'position:fixed;inset:0;z-index:2147483647;background:#081420;' +
+        'color:#e8edf3;display:flex;align-items:center;justify-content:center;' +
+        'padding:24px;font:14px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif');
+      var card = global.document.createElement('div');
+      card.setAttribute('style',
+        'max-width:460px;border:1px solid #2b3d52;border-top:3px solid #e05252;' +
+        'background:#101d2c;padding:24px 26px');
+      var h = global.document.createElement('div');
+      h.textContent = t('gt.title.revoked');
+      h.setAttribute('style', 'font-size:19px;font-weight:600;margin-bottom:10px');
+      var p = global.document.createElement('div');
+      p.textContent = t('gt.body.revoked');
+      p.setAttribute('style', 'font-size:13.5px;color:#b8c7d8');
+      card.appendChild(h);
+      card.appendChild(p);
+      cover.appendChild(card);
+      body.appendChild(cover);
+    } catch (e) {}
+  });
 })(window);

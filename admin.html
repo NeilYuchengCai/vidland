@@ -13,6 +13,7 @@
 <meta name="application-name" content="中央登记">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="vidland.css">
+<script src="vidland-audit.js"></script>
 <script src="vidland-store.js"></script>
 <script src="vidland-i18n.js"></script>
 <script src="vidland-core.js"></script>
@@ -63,34 +64,23 @@
   var V = window.Vidland, t = V.t, esc = V.esc, fmt = V.fmt;
 
   /* ==========================================================
-     THE MASTER KEY — present in this terminal ALONE.
-     The three civil terminals hold only the public component.
+     THE MASTER KEY no longer ships with this page.
+     It was moved into the loopback audit vault (DPAPI-sealed on this
+     machine). This terminal POSTs the sealed envelope to the server and
+     receives ONLY plaintext business data back. A phone running this page
+     therefore holds no private key, no vault key and no token string —
+     while every Authority function stays available.
      ========================================================== */
-  var PRIVATE_JWK = {
-    kty: "RSA",
-    n: "pD8cDO-qfdtwY817wi9kpyxL56OxZyO8GiGZq8Z_jOIDEVF9x-ELcWGNhuJWt8wrOn8wwn4cNJf1qaqdvzj81RXqkiJPU0qeu0sfqzy2yrft95InptJKN2CvwCTUcPzdwB-C-Iw5m_ooO2KSig5nM8vUbw-ZTtlHg10YQl6UXuw3PDOHYOqp_PBUHGg5bP3lqWWmF4MymxjkY4BShlqSBl809S1O4SVkwmebhNFYj6813Ulj23Ea60nExEVejEacqzuqJC0bxzTORZ4knplK75QI8SyRO4x-_vgfVLQbbYEA5jzhdpKN5BUGFM5VWX0ttjefcRUFo11vIGnbq4N8CQ",
-    e: "AQAB",
-    d: "ErRrNd_vayDb9km27-Dk1hL52_ns4KGVsOYlsYXMDdfJYKYGrIYo_vMMopFRLeJPA_zrKSMihCzQGc_n4hiT1pKF4bmNjh8_33WJOD-UU5bJv3mCEYH-WLsmmLu5A9sQR-puyG5zuxssjMLHjHhicWgjm7hLjcq51bB67EgIHp0aRozlTDVn6Sp2mVfLFuM68ykBZOl_QNeJMnUOY1qD-92zsrKrRDsyM60dqmUOtmvI4lXpGB-mxOkJiOQL0mI8OvPVYMw84uyLNtCJra0JHDj1uo-_YBjgHjCudoOnjUEH8EzGBANMaCVPDA4m8N34_cTJBnn7jJnGAwltRL7IFw",
-    p: "26bOark_xEXgmkoXawHmi0NC866Pg8LM9P3kHdHN-AuaOiIgzLrN-JD-Hrc9iEZmkHDfx_KPTg0D-ej9RnUTtFcVGt_0eZKgctAnoaVBFCSJZZyFZwIAUq6AnFIka8ZW9OP7MTFHcdv02Afn6-wOogAfsLfqDRgbo0--aBGxSr8",
-    q: "v20npqz1wOiPn1kwHtiioolCsns81vtTDRWCqFFA1njeNJbobP1sLTR4lcX0gJuEzGJryhxo5UDtQ-v7qnPF90tZtQbNeSjZ6dgVrqXm4EvRyXjKBCPCHrqq1judoH7TBUHpHU0nj15H0woQPbpwWfNTvflB83-8-09yEutv0zc",
-    dp: "DHifFa4o8bLp-rikNb4o4dVS0tUhbuC7lFlp_0tvP1shSZWweQ9OLIPG-eV7h-Y_YooWGpsqCctxY1oYL0zsbnvXRexbTB_IHly1M1dXp5YfevZ1GJEjhY5E3RtI2BmtzD-5fmSG4u8TKsTgJSQE_Ku3IOiAUHgC8bXQYMZIY68",
-    dq: "WN17gszYaW2M_xSQWkGHfpzp8aF0ZPjXXUOXHDxcNTR3M0K7M52SEopBUIZNM0b_J0Kpd3Io4AR8IQP0GPUV-e9o_bjiulRUlVJS_njV7VpFUZpZbgKLo2hU1o9mZZN6sv4eEhQ3QT8raLVLRNzAO4HSZmbITxoFyUTgWBgkGZE",
-    qi: "BDZt7F5BgrA1tM5oEyNmUmnZ6PwNmnX_N9uKziPht0EWnDyhbM4rL-y5L79TQixb-aI5KfUo2RJ6FiD1H0O1tFK7Md3TelduUS5MWNPCme9g2OrQeB29h3wFhE39IQmtUHt8EOPZBIUmWPYilr1J8nSPs0DDyW0929uIHkG_aOw"
-  };
-  function b64u8(s) { var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
-  var _priv = null;
-  async function privKey() {
-    if (!_priv) _priv = crypto.subtle.importKey('jwk', PRIVATE_JWK,
-      { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
-    return _priv;
-  }
   V.registerAuthorityOpener(async function (env) {
-    var key = await privKey();
-    var raw = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, key, b64u8(env.ek));
-    var aes = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['decrypt']);
-    var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u8(env.iv), tagLength: 128 },
-      aes, b64u8(env.ct));
-    return JSON.parse(new TextDecoder().decode(plain));
+    var r = await fetch('/api/vault/open', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ envelope: env })
+    });
+    var j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'OPEN_DENIED');
+    return j.plain;
   });
 
   /* Inspection protocols are shipped EMPTY by statute.
@@ -723,7 +713,8 @@
          in core.js tests for 'APPROVED' when opening the oath ceremony. */
       a.status = action === 'PREAPPROVE' ? 'PREAPPROVED'
                : action === 'WAITLIST'   ? 'WAITLISTED'
-               : action === 'APPROVE'    ? 'APPROVED' : action;
+               : action === 'APPROVE'    ? 'APPROVED'
+               : action === 'REJECT'     ? 'REJECTED' : action;
       a.reason = reason || null; a.decidedAt = V.now();
       s.decisions.push({ id: V.uid('DEC'), appId: a.id, ref: a.ref, action: action, reason: reason, at: V.now() });
       var sub = s.subjects[a.ref];
@@ -911,7 +902,7 @@
         V.Vault.mutate(function (s) {
           var lp = s.leaps.find(function (x) { return x.id === id; });
           if (!lp || lp.status !== 'LODGED') return false;
-          lp.status = d === 'APPROVE' ? 'APPROVED' : d;
+          lp.status = d === 'APPROVE' ? 'APPROVED' : d === 'REJECT' ? 'REJECTED' : d;
           lp.reason = rr || null; lp.decidedAt = V.now();
           V.Vault.clearPending(s, lp.ref, lp.directedLevel, 'LEAP');
           V.Vault.notice(s, lp.ref, 'LEAP_DECISION', { action: d, reason: rr });

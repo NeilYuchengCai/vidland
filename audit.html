@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Access audit authority</title>
+<style>
+:root{
+  --bg:#0b1420; --panel:#101d2c; --panel2:#14243a; --line:#24374e;
+  --line2:#1b2c40; --text:#e6edf5; --muted:#8fa5bd; --dim:#6a829c;
+  --blue:#6f9fd8; --green:#4fae82; --red:#e05252; --amber:#d8a13a;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:14px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+ -webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
+ border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:18px}
+h1{font-size:20px;font-weight:600;margin:0;letter-spacing:.02em}
+.kicker{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+.stat{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+.stat div{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--blue);
+ padding:10px 16px;min-width:120px}
+.stat .n{font:600 22px/1.2 var(--mono);color:var(--text)}
+.stat .l{font-size:10.5px;color:var(--muted);letter-spacing:.06em}
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+ padding:9px 16px;cursor:pointer;font-size:13px;font-family:inherit}
+.tabs button.on{color:var(--text);border-bottom-color:var(--blue)}
+table{width:100%;border-collapse:collapse;background:var(--panel);
+ border:1px solid var(--line);font-size:12.5px}
+th{text-align:left;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+ color:var(--muted);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.mono{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.dim{color:var(--dim)}
+.badge{display:inline-block;padding:2px 8px;border-radius:2px;font-size:10.5px;
+ letter-spacing:.04em;font-weight:600}
+.b-pending{background:#3a3018;color:#e8c477}
+.b-ok{background:#153528;color:#79d3a8}
+.b-cut{background:#3a1c1c;color:#ee9090}
+.b-neutral{background:#1c2c40;color:#9fb6ce}
+button.act,select.act{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+ padding:5px 11px;border-radius:2px;cursor:pointer;font-size:11.5px;font-family:inherit}
+button.act:hover,select.act:hover{border-color:var(--blue)}
+button.act.go{border-color:#2c6b4f;color:#8fdbb4}
+button.act.danger{border-color:#6b3030;color:#ee9090}
+button.act:disabled{opacity:.4;cursor:default}
+input,select{background:#0a1624;border:1px solid var(--line);color:var(--text);
+ padding:6px 9px;border-radius:2px;font-size:12.5px;font-family:inherit}
+input[type=text],input[type=number]{font-family:var(--mono)}
+label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px}
+.form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;
+ background:var(--panel2);border:1px solid var(--line);padding:14px;margin:10px 0 16px}
+.form .wide{grid-column:span 2}
+@media(max-width:760px){.form{grid-template-columns:1fr 1fr}.form .wide{grid-column:span 2}}
+.chk{display:flex;align-items:center;gap:7px;margin-top:18px;font-size:12px;color:var(--muted)}
+.chk input{width:auto}
+.card{background:var(--panel);border:1px solid var(--line);padding:16px;margin-bottom:14px}
+.card h3{font-size:13px;margin:0 0 10px;font-weight:600}
+.note{background:#16283c;border-left:3px solid var(--blue);padding:11px 14px;
+ font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.75}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.logdetail{font:11px var(--mono);color:var(--dim);word-break:break-all}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.spacer{flex:1}
+.proof{border-top:3px solid var(--green)}
+.proofgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
+@media(max-width:760px){.proofgrid{grid-template-columns:1fr 1fr}}
+.proofgrid div{background:#0c1a28;border:1px solid var(--line2);padding:8px 10px}
+.proofgrid .l{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.proofgrid .v{font:11.5px var(--mono);color:#9fd3b8;word-break:break-all;margin-top:3px}
+.err{color:var(--red);font-size:12px;padding:10px 0}
+.oknote{background:#153528;border-left:3px solid var(--green);padding:10px 14px;
+ color:#9fd3b8;font-size:12px;margin-bottom:16px}
+</style>
+<script src="vidland-i18n.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="kicker" data-i18n="au.kicker"></div>
+      <h1 data-i18n="au.title"></h1>
+    </div>
+    <div class="row">
+      <span class="dim mono" id="keyMode"></span>
+      <select class="act" id="langSel" aria-label="Language"></select>
+      <button class="act" id="refreshBtn" data-i18n="au.refresh"></button>
+      <button class="act danger" id="purgeBtn" data-i18n="au.action.purge"></button>
+    </div>
+  </header>
+
+  <div class="card proof">
+    <h3 data-i18n="au.proof.title"></h3>
+    <div class="note" style="margin-bottom:0" data-i18n="au.proof.body"></div>
+    <div class="proofgrid" id="proofGrid"></div>
+  </div>
+
+  <div class="note" data-i18n="au.note"></div>
+  <div class="dim" style="font-size:11px;margin:-8px 0 16px" data-i18n="au.purge.note"></div>
+  <div id="notice" class="oknote" data-i18n="au.purge.done" style="display:none"></div>
+  <div class="err" id="err" style="display:none"></div>
+  <div class="stat" id="stats"></div>
+
+  <div class="tabs">
+    <button data-tab="requests" class="on" data-i18n="au.tab.requests"></button>
+    <button data-tab="tokens" data-i18n="au.tab.tokens"></button>
+    <button data-tab="devices" data-i18n="au.tab.devices"></button>
+    <button data-tab="logs" data-i18n="au.tab.logs"></button>
+  </div>
+
+  <section id="tab-requests">
+    <div class="toolbar">
+      <span class="dim" style="font-size:12px" data-i18n="au.req.note"></span>
+      <span class="spacer"></span>
+      <button class="act danger" id="cutAllBtn" data-i18n="au.req.cutAll"></button>
+    </div>
+    <div class="card">
+      <h3 data-i18n="au.req.defaults"></h3>
+      <div class="form" id="defaultForm">
+        <div><label data-i18n="au.req.hours"></label><input type="number" id="dHours" min="1" max="720" value="8"></div>
+        <div><label data-i18n="au.req.maxMin"></label><input type="number" id="dMax" min="0" value="0"></div>
+        <div class="wide"><label data-i18n="au.req.daily"></label><input type="text" id="dDaily" placeholder="09:00-18:00, 20:00-22:00"></div>
+        <div><label data-i18n="au.req.terminals"></label><select id="dTerm">
+          <option value="all" data-i18n="au.req.termAll"></option>
+          <option value="both" data-i18n="au.req.termBoth"></option>
+          <option value="admin" data-i18n="au.req.termAdmin"></option>
+          <option value="entry" data-i18n="au.req.termEntry"></option>
+        </select></div>
+        <div class="wide chk"><input type="checkbox" id="dOnce"><label for="dOnce" style="margin:0" data-i18n="au.req.once"></label></div>
+        <div class="wide"><button class="act go" id="saveDefaultBtn" data-i18n="au.req.save"></button></div>
+      </div>
+    </div>
+    <div id="requestTable"></div>
+  </section>
+
+  <section id="tab-tokens" style="display:none"><div id="tokenTable"></div></section>
+  <section id="tab-devices" style="display:none"><div id="deviceTable"></div></section>
+  <section id="tab-logs" style="display:none">
+    <div class="toolbar"><span class="dim" style="font-size:12px" data-i18n="au.log.note"></span></div>
+    <div id="logTable"></div>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var I = window.VidlandI18N;
+  var $ = function (id) { return document.getElementById(id); };
+  var t = function (k, v) { return I.t(k, v); };
+  var LOCALE = { en: 'en-GB', es: 'es-ES', fr: 'fr-FR',
+                 zh: 'zh-CN', zht: 'zh-TW', ru: 'ru-RU' };
+  var state = null, proof = null, tab = 'requests', timer = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+               "'": '&#39;' }[c];
+    });
+  }
+  function fmt(ms) {
+    if (!ms) return '—';
+    return new Date(ms).toLocaleString(LOCALE[I.getLang()] || 'en-GB',
+                                       { hour12: false });
+  }
+  function badge(s) {
+    var k = ({ PENDING: 'b-pending', APPROVED: 'b-ok', ISSUED: 'b-ok',
+               GRANTED: 'b-ok', REJECTED: 'b-cut', REVOKED: 'b-cut' })[s]
+             || 'b-neutral';
+    var txt = I.has('au.st.' + s) ? t('au.st.' + s) : esc(s);
+    return '<span class="badge ' + k + '">' + txt + '</span>';
+  }
+  function parseDaily(txt) {
+    return String(txt || '').split(/[,，;；]/).map(function (x) {
+      var m = x.trim().match(/^(\d{1,2}:\d{2})\s*[-~至]\s*(\d{1,2}:\d{2})$/);
+      return m ? [m[1], m[2]] : null;
+    }).filter(Boolean);
+  }
+  function dailyText(list) {
+    return (list || []).map(function (p) { return p[0] + '-' + p[1]; }).join(', ');
+  }
+  function termText(list) {
+    if (!list || list.indexOf('*') >= 0) return t('au.req.termAll');
+    if (list.length >= 2) return t('au.req.termBoth');
+    return list[0] === 'admin' ? t('au.req.termAdmin')
+         : list[0] === 'entry' ? t('au.req.termEntry') : '—';
+  }
+  function th(key) { return '<th>' + esc(t(key)) + '</th>'; }
+  function empty(key) {
+    return '<div class="card dim">' + esc(t(key)) + '</div>';
+  }
+  async function api(path, body) {
+    var r = await fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      credentials: 'same-origin',
+      headers: body === undefined ? { 'X-VDL-Audit': '1' } :
+        { 'Content-Type': 'application/json', 'X-VDL-Audit': '1' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    return r.json();
+  }
+  function defaultPolicy() {
+    return {
+      hours: Math.max(1, Math.min(720, parseInt($('dHours').value, 10) || 8)),
+      maxMinutes: Math.max(0, parseInt($('dMax').value, 10) || 0),
+      daily: parseDaily($('dDaily').value),
+      terminals: $('dTerm').value === 'all' ? ['*']
+        : $('dTerm').value === 'both' ? ['admin', 'entry']
+        : [$('dTerm').value],
+      once: $('dOnce').checked
+    };
+  }
+  function fillPolicy(p) {
+    if (!p) return;
+    $('dHours').value = p.hours == null ? 8 : p.hours;
+    $('dMax').value = p.maxMinutes == null ? 0 : p.maxMinutes;
+    $('dDaily').value = dailyText(p.daily);
+    var a = p.terminals || ['admin', 'entry'];
+    $('dTerm').value = a.indexOf('*') >= 0 ? 'all'
+      : a.length >= 2 ? 'both' : (a[0] || 'all');
+    $('dOnce').checked = !!p.once;
+  }
+  function applyStatic() {
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.documentElement.lang = I.getLang() === 'zht' ? 'zh-Hant'
+      : I.getLang() === 'zh' ? 'zh-CN' : I.getLang();
+    document.title = t('au.title');
+    $('langSel').value = I.getLang();
+  }
+
+  function renderProof() {
+    if (!proof) return;
+    var rows = [
+      ['au.proof.peer', proof.peer],
+      ['au.proof.host', proof.host],
+      ['au.proof.origin', proof.origin],
+      ['au.proof.site', proof.site],
+      ['au.proof.session', proof.session ? t('au.proof.ok') : t('au.proof.no')],
+      ['au.proof.key', proof.keyMode]
+    ];
+    $('proofGrid').innerHTML = rows.map(function (r) {
+      return '<div><div class="l">' + esc(t(r[0])) + '</div>' +
+             '<div class="v">' + esc(r[1]) + '</div></div>';
+    }).join('');
+    $('keyMode').textContent = proof.keyMode + ' · ' + proof.auth;
+  }
+
+  async function load() {
+    var d = await api('/api/audit/data');
+    if (d.error) {
+      $('err').style.display = '';
+      $('err').textContent = 'Session not established — reload this page.';
+      return;
+    }
+    $('err').style.display = 'none';
+    state = d;
+    render();
+  }
+  function render() {
+    if (!state) return;
+    var pending = state.requests.filter(function (r) { return r.state === 'PENDING'; }).length;
+    var live = state.tokens.filter(function (x) { return !x.revoked; }).length;
+    var st = [[pending, 'au.stat.pending'], [live, 'au.stat.live'],
+              [state.devices.length, 'au.stat.devices'],
+              [state.rev, 'au.stat.cuts'], [state.logs.length, 'au.stat.records']];
+    $('stats').innerHTML = st.map(function (r) {
+      return '<div><div class="n">' + esc(r[0]) + '</div><div class="l">' +
+             esc(t(r[1])) + '</div></div>';
+    }).join('');
+    renderRequests(); renderTokens(); renderDevices(); renderLogs();
+  }
+
+  function head(keys) {
+    return '<thead><tr>' + keys.map(th).join('') + '</tr></thead>';
+  }
+  function renderRequests() {
+    var rows = state.requests.slice(0, 80);
+    if (!rows.length) { $('requestTable').innerHTML = empty('au.req.empty'); return; }
+    var h = '<table>' + head(['au.req.th.time', 'au.req.th.state',
+      'au.req.th.device', 'au.req.th.peer', 'au.req.th.id',
+      'au.req.th.actions']) + '<tbody>';
+    rows.forEach(function (r) {
+      h += '<tr><td class="mono">' + esc(fmt(r.at)) + '</td><td>' + badge(r.state) +
+        '</td><td><div class="mono">' + esc(r.device) + '</div><div class="dim">' +
+        esc(r.terminal) + ' · ' + esc(r.hits || 1) + ' ' + esc(t('au.req.hits')) +
+        '</div>' +
+        (r.mode ? '<div class="dim">' + esc(t(r.mode === 'standalone'
+          ? 'au.mode.standalone' : 'au.mode.browser')) + '</div>' : '') +
+        '</td><td class="mono dim">' + esc(r.peer) + '</td>' +
+        '<td class="mono dim">' + esc(r.id) + '</td><td><div class="row">';
+      if (r.state === 'PENDING') {
+        h += '<button class="act go" data-approve="' + esc(r.id) + '">' +
+             esc(t('au.req.approve')) + '</button>' +
+             '<button class="act danger" data-deny="' + esc(r.id) + '">' +
+             esc(t('au.req.deny')) + '</button>';
+      } else {
+        h += '<span class="dim">' + esc(r.tokenId || r.note || '—') + '</span>';
+      }
+      h += '</div></td></tr>';
+    });
+    $('requestTable').innerHTML = h + '</tbody></table>';
+  }
+
+  function renderTokens() {
+    var rows = state.tokens.slice(0, 100);
+    if (!rows.length) { $('tokenTable').innerHTML = empty('au.tok.empty'); return; }
+    var h = '<table>' + head(['au.tok.th.id', 'au.req.th.state',
+      'au.dev.th.id', 'au.tok.th.validity', 'au.tok.th.window',
+      'au.req.terminals', 'au.tok.th.lastSeen', 'au.req.th.actions']) + '<tbody>';
+    rows.forEach(function (x) {
+      var live = !x.revoked;
+      h += '<tr><td class="mono">' + esc(x.id) + '</td><td>' +
+        (live ? '<span class="badge b-ok">' + esc(t('au.tok.live')) + '</span>'
+              : '<span class="badge b-cut">' + esc(t('au.tok.revoked')) + '</span>') +
+        '</td><td class="mono">' + esc(x.device) + '</td><td class="mono dim">' +
+        esc(fmt(x.notBefore)) + '<br>' + esc(fmt(x.notAfter)) + '</td><td class="mono">' +
+        esc(dailyText(x.daily) || t('au.tok.allDay')) +
+        (x.maxMinutes ? '<div class="dim">' + esc(t('au.tok.limit', { n: x.maxMinutes })) + '</div>' : '') +
+        (x.once ? '<div class="dim">' + esc(t('au.tok.once')) + '</div>' : '') +
+        '</td><td>' + esc(termText(x.terminals)) + '</td><td class="mono dim">' +
+        esc(fmt(x.lastSeen)) + '<div>' + esc(t('au.tok.uses', { n: x.uses || 0 })) +
+        '</div></td><td>' +
+        (live ? '<button class="act danger" data-cut="' + esc(x.id) + '">' +
+                esc(t('au.tok.cut')) + '</button>' : '—') + '</td></tr>';
+    });
+    $('tokenTable').innerHTML = h + '</tbody></table>';
+  }
+
+  function renderDevices() {
+    var rows = state.devices;
+    if (!rows.length) { $('deviceTable').innerHTML = empty('au.dev.empty'); return; }
+    var h = '<table>' + head(['au.dev.th.id', 'au.dev.th.label',
+      'au.dev.th.status', 'au.dev.th.seen', 'au.dev.th.policy',
+      'au.req.th.actions']) + '<tbody>';
+    rows.forEach(function (d) {
+      var p = d.policy || {};
+      h += '<tr><td class="mono">' + esc(d.id) + '</td><td>' +
+        '<input type="text" data-label="' + esc(d.id) + '" value="' +
+        esc(d.label || '') + '" placeholder="' + esc(t('au.dev.labelHint')) +
+        '" style="width:130px"></td><td>' +
+        (d.blocked ? '<span class="badge b-cut">' + esc(t('au.dev.blocked')) + '</span>'
+                   : '<span class="badge b-ok">' + esc(t('au.dev.allowed')) + '</span>') +
+        '</td><td class="mono dim">' + esc(fmt(d.firstSeen)) + '<br>' +
+        esc(fmt(d.lastSeen)) + '</td><td class="mono dim">' +
+        esc(dailyText(p.daily) || t('au.tok.allDay')) + '<div>' +
+        esc(t('au.misc.hours', { n: p.hours || 8 })) + ' · ' +
+        esc(termText(p.terminals)) + '</div></td><td><div class="row">' +
+        '<button class="act" data-save="' + esc(d.id) + '">' +
+        esc(t('au.dev.save')) + '</button>' +
+        '<button class="act ' + (d.blocked ? 'go' : 'danger') + '" data-block="' +
+        esc(d.id) + '" data-blocked="' + (d.blocked ? '1' : '0') + '">' +
+        esc(t(d.blocked ? 'au.dev.restore' : 'au.dev.disable')) +
+        '</button></div></td></tr>';
+    });
+    $('deviceTable').innerHTML = h + '</tbody></table>';
+  }
+
+  function renderLogs() {
+    var rows = state.logs || [];
+    if (!rows.length) { $('logTable').innerHTML = empty('au.log.empty'); return; }
+    var h = '<table>' + head(['au.log.th.time', 'au.log.th.kind',
+      'au.log.th.action', 'au.log.th.device', 'au.log.th.peer',
+      'au.log.th.detail']) + '<tbody>';
+    rows.forEach(function (l) {
+      h += '<tr><td class="mono dim">' + esc(fmt(l.at)) + '</td><td>' + esc(l.kind) +
+        '</td><td class="mono">' + esc(l.action) + '</td><td class="mono dim">' +
+        esc(l.device || '—') + '<div>' + esc(l.terminal || '') + '</div></td>' +
+        '<td class="mono dim">' + esc(l.peer || '—') + '</td>' +
+        '<td class="logdetail">' + esc(JSON.stringify(l.detail || {})) + '</td></tr>';
+    });
+    $('logTable').innerHTML = h + '</tbody></table>';
+  }
+
+  /* ---- events -------------------------------------------------------- */
+  I.langs().forEach(function (l) {
+    var o = document.createElement('option');
+    o.value = l.id;
+    o.textContent = l.label + ' · ' + l.native;
+    $('langSel').appendChild(o);
+  });
+  var qLang = new URLSearchParams(window.location.search).get('lang');
+  if (qLang) I.setLang(qLang);
+  $('langSel').addEventListener('change', function () {
+    I.setLang(this.value);
+    applyStatic(); renderProof(); render();
+  });
+  window.addEventListener('vdl:lang', function () {
+    applyStatic(); renderProof(); render();
+  });
+  document.querySelectorAll('.tabs button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      tab = b.getAttribute('data-tab');
+      document.querySelectorAll('.tabs button').forEach(function (x) {
+        x.classList.toggle('on', x === b);
+      });
+      ['requests', 'tokens', 'devices', 'logs'].forEach(function (k) {
+        $('tab-' + k).style.display = (k === tab) ? '' : 'none';
+      });
+    });
+  });
+  $('refreshBtn').addEventListener('click', load);
+  $('purgeBtn').addEventListener('click', async function () {
+    if (!confirm(t('au.confirm.purge'))) return;
+    $('notice').style.display = 'none';
+    var r = await api('/api/audit/purge', {});
+    if (r && r.ok) {
+      $('notice').style.display = '';
+      await load();
+    }
+  });
+  $('saveDefaultBtn').addEventListener('click', async function () {
+    await api('/api/audit/policy', { patch: defaultPolicy() });
+    await load();
+  });
+  $('cutAllBtn').addEventListener('click', async function () {
+    if (!confirm(t('au.confirm.cutAll'))) return;
+    await api('/api/audit/revoke', { all: true });
+    await load();
+  });
+
+  document.addEventListener('click', async function (e) {
+    var btn = e.target.closest ? e.target.closest('button') : null;
+    if (!btn) return;
+    var a = btn.getAttribute('data-approve');
+    if (a) {
+      if (!confirm(t('au.confirm.approve'))) return;
+      await api('/api/audit/approve', { requestId: a, policy: defaultPolicy() });
+      await load(); return;
+    }
+    var d = btn.getAttribute('data-deny');
+    if (d) {
+      if (!confirm(t('au.confirm.deny'))) return;
+      await api('/api/audit/deny', { requestId: d, note: 'OPERATOR_DENIED' });
+      await load(); return;
+    }
+    var c = btn.getAttribute('data-cut');
+    if (c) {
+      if (!confirm(t('au.confirm.cut'))) return;
+      await api('/api/audit/revoke', { tokenId: c });
+      await load(); return;
+    }
+    var s = btn.getAttribute('data-save');
+    if (s) {
+      var input = document.querySelector('input[data-label="' + s + '"]');
+      await api('/api/audit/device',
+                { device: s, patch: { label: input ? input.value : '' } });
+      await load(); return;
+    }
+    var b = btn.getAttribute('data-block');
+    if (b) {
+      var blocked = btn.getAttribute('data-blocked') === '1';
+      if (!blocked && !confirm(t('au.confirm.block'))) return;
+      await api('/api/audit/device', { device: b, patch: { blocked: !blocked } });
+      await load(); return;
+    }
+  });
+
+  applyStatic();
+  api('/api/audit/ping').then(function (p) {
+    proof = p.proof;
+    renderProof();
+  }).catch(function () {});
+  load().then(function () {
+    fillPolicy(state && state.policy);
+    timer = setInterval(load, 2000);
+  }).catch(function () {
+    /* Offline preview of the page: no audit host behind it. Static text
+       stays readable; the live endpoint always answers with JSON. */
+  });
+})();
+</script>
+</body>
+</html>
