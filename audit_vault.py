@@ -568,6 +568,50 @@ def _window_ok(daily, when=None):
     return False
 
 
+POLICY_FIELDS = ("hours", "daily", "terminals", "maxMinutes", "once")
+POLICY_DEFAULTS = {"hours": 8, "daily": [], "terminals": ["*"],
+                   "maxMinutes": 0, "once": False}
+
+
+def token_time_state(rec, now=None):
+    """Time-based part of a token's effective state. Shared by validate(),
+    the gate status probe and the audit UI, so the three never disagree about
+    validity, the daily window or the session limit."""
+    now = now if now is not None else _now()
+    if now < rec.get("notBefore", 0) or now > rec.get("notAfter", 0):
+        return "EXPIRED"
+    if not _window_ok(rec.get("daily", [])):
+        return "OUTSIDE_WINDOW"
+    limit = rec.get("maxMinutes", 0) or 0
+    if limit and now - rec.get("createdAt", now) > limit * 60000:
+        return "SESSION_LIMIT"
+    return "OK"
+
+
+def token_effective(rec, devices, now=None):
+    """One authoritative status for a token, consumed by every audit tab."""
+    if rec.get("revoked"):
+        return "REVOKED"
+    if (devices or {}).get(rec.get("device"), {}).get("blocked"):
+        return "DEVICE_BLOCKED"
+    t = token_time_state(rec, now)
+    return "GRANTED" if t == "OK" else t
+
+
+def cut_requests(db, devices, note="OPERATOR_CUT"):
+    """Mark every still-live request of these devices as cut."""
+    n = 0
+    for req in db.get("requests", {}).values():
+        if req.get("device") not in devices:
+            continue
+        if req.get("state") in ("APPROVED", "ISSUED", "PENDING"):
+            req["state"] = "REVOKED"
+            req["note"] = note
+            req.pop("issued", None)
+            n += 1
+    return n
+
+
 # --------------------------------------------------------------------------
 # Vault
 # --------------------------------------------------------------------------
@@ -930,18 +974,16 @@ class AuditVault:
         if expect_rid and rec.get("requestId") != expect_rid:
             return {"state": "UNKNOWN"}
         dev = self.db["devices"].get(rec["device"], {})
-        now = _now()
         if rec.get("revoked") or dev.get("blocked"):
             return {"state": "REVOKED", "reason": "OPERATOR_CUT"}
         if device and rec["device"] != device:
             return {"state": "REVOKED", "reason": "DEVICE_MISMATCH"}
-        if now < rec.get("notBefore", 0) or now > rec.get("notAfter", 0):
-            return {"state": "EXPIRED", "reason": "EXPIRED"}
-        if not _window_ok(rec.get("daily", [])):
-            return {"state": "EXPIRED", "reason": "OUTSIDE_WINDOW"}
-        if rec.get("maxMinutes") and now - rec["createdAt"] > \
-                rec["maxMinutes"] * 60000:
-            return {"state": "EXPIRED", "reason": "SESSION_LIMIT"}
+        # Same time rules as validate() and the audit UI.
+        eff = token_effective(rec, self.db["devices"])
+        if eff not in ("GRANTED", "REVOKED", "DEVICE_BLOCKED"):
+            return {"state": "EXPIRED", "reason": eff}
+        if eff != "GRANTED":
+            return {"state": "REVOKED", "reason": "OPERATOR_CUT"}
         return {"state": "GRANTED", "tokenId": rec["id"],
                 "requestId": rec.get("requestId", "")}
 
@@ -1044,25 +1086,29 @@ class AuditVault:
             if terminal and "*" not in terms and terminal not in terms:
                 return self._deny("TERMINAL_DENIED", peer, device, terminal, path, record, rec["id"])
             now = _now()
-            if now < rec.get("notBefore", 0) or now > rec.get("notAfter", 0):
-                return self._deny("EXPIRED", peer, device, terminal, path, record, rec["id"])
-            if not _window_ok(rec.get("daily", [])):
-                return self._deny("OUTSIDE_WINDOW", peer, device, terminal, path, record, rec["id"])
-            limit = rec.get("maxMinutes", 0) or 0
-            if limit and now - rec["createdAt"] > limit * 60000:
-                return self._deny("SESSION_LIMIT", peer, device, terminal, path, record, rec["id"])
+            time_state = token_time_state(rec, now)
+            if time_state != "OK":
+                return self._deny(time_state, peer, device, terminal, path,
+                                  record, rec["id"])
             rec["lastSeen"] = now
-            rec["uses"] = rec.get("uses", 0) + 1
-            if rec.get("once") and rec["uses"] > 1:
-                rec["revoked"] = True
-                rec["revokedAt"] = now
-                self.db["rev"] += 1
-                self.log("TOKEN", "ONE_SHOT_CONSUMED", {"tokenId": rec["id"]},
-                         device, terminal, peer)
             # /api/store/rev is polled once a second by every open terminal.
+            # It is transport bookkeeping, not an access: counting it would
+            # burn a once-only token within two seconds of approval, before
+            # the operator had done anything at all.
+            probe = str(path or "").endswith("/rev")
+            if not probe:
+                rec["uses"] = rec.get("uses", 0) + 1
+                if rec.get("once") and rec["uses"] > 1:
+                    rec["revoked"] = True
+                    rec["revokedAt"] = now
+                    self.db["rev"] += 1
+                    self.log("TOKEN", "ONE_SHOT_CONSUMED",
+                             {"tokenId": rec["id"]}, device, terminal, peer)
+                    return self._deny("ONE_SHOT_CONSUMED", peer, device,
+                                      terminal, path, record, rec["id"])
             # Persist usage counters at most every 5 s instead of hammering
             # the encrypted vault with a full rewrite on each poll.
-            elif now - rec.get("_savedAt", 0) > 5000:
+            if now - rec.get("_savedAt", 0) > 5000:
                 rec["_savedAt"] = now
                 self._save()
             return True, "OK", rec["id"]
@@ -1083,8 +1129,19 @@ class AuditVault:
             req = self.db["requests"].get(rid)
             if not req or req["state"] != "PENDING":
                 return {"ok": False, "error": "申请不存在或已处理"}
+            dev_pre = self.db["devices"].get(req["device"], {})
             base = dict(self.db.get("policy", {}))
-            base.update(policy or {})
+            # A policy saved on the Devices tab is the baseline for later
+            # approvals. The approval form always posts its full defaults,
+            # so only fields the operator actually changed may override the
+            # per-device values; otherwise a re-approval silently wipes them.
+            device_policy = dev_pre.get("policy") or {}
+            base.update(device_policy)
+            for k, v in (policy or {}).items():
+                if (k in POLICY_FIELDS and k in device_policy
+                        and v == POLICY_DEFAULTS.get(k)):
+                    continue
+                base[k] = v
             hours = max(1, min(int(base.get("hours", 8)), 24 * 30))
             # An approval must at minimum unlock the terminal that sent the
             # request, otherwise the gate reloads into another gate forever.
@@ -1114,8 +1171,9 @@ class AuditVault:
                 "firstSeen": now, "lastSeen": now, "policy": {}})
             dev["lastSeen"] = now
             dev["blocked"] = False
-            dev["policy"] = {k: base.get(k) for k in
-                             ("hours", "daily", "terminals", "maxMinutes", "once")}
+            dev["policy"] = {k: base.get(k, POLICY_DEFAULTS.get(k))
+                             for k in POLICY_FIELDS}
+            dev["cutAt"] = None
             req["state"] = "APPROVED"
             req["approvedAt"] = now
             req["tokenId"] = tid
@@ -1143,55 +1201,113 @@ class AuditVault:
 
     def revoke(self, target):
         """target: {"tokenId": ...} | {"device": ...} | {"all": true}.
-        Immediate: every subsequent API call is refused, and the shared
-        rev counter lets the mobile gate lock its screen on the next poll."""
+
+        A cut now keeps all three audit tabs in sync: the tokens are revoked,
+        their requests become REVOKED and the affected devices carry a cutAt
+        marker. Previously cut-all left the Devices tab showing "allowed"
+        and disabling a device left the Requests tab showing "approved".
+        """
         with self.lock:
             n = 0
             want = (target or {})
+            now = _now()
+            hit_devices, hit_token_ids = set(), set()
             for rec in self.db["tokens"].values():
                 hit = (want.get("all") or
                        (want.get("tokenId") and rec["id"] == want["tokenId"]) or
                        (want.get("device") and rec["device"] == want["device"]))
                 if hit and not rec.get("revoked"):
                     rec["revoked"] = True
-                    rec["revokedAt"] = _now()
+                    rec["revokedAt"] = now
+                    hit_devices.add(rec["device"])
+                    hit_token_ids.add(rec["id"])
                     n += 1
-            for rid, req in self.db["requests"].items():
-                if (want.get("all") or
-                        (want.get("device") and req["device"] == want["device"]) or
-                        (want.get("tokenId") and req.get("tokenId") == want["tokenId"])):
-                    if req["state"] in ("APPROVED", "ISSUED", "PENDING"):
-                        req["state"] = "REVOKED"
-                        req["note"] = "OPERATOR_CUT"
-                        req.pop("issued", None)
+            if want.get("device"):
+                hit_devices.add(want["device"])
+            for req in self.db["requests"].values():
+                match = (want.get("all") or
+                         (want.get("device") and
+                          req["device"] == want["device"]) or
+                         (want.get("tokenId") and
+                          req.get("tokenId") == want["tokenId"]) or
+                         req.get("tokenId") in hit_token_ids)
+                if match and req["state"] in ("APPROVED", "ISSUED", "PENDING"):
+                    req["state"] = "REVOKED"
+                    req["note"] = "OPERATOR_CUT"
+                    req.pop("issued", None)
+            affected = set(hit_devices)
+            if want.get("all"):
+                affected.update(d["id"] for d in self.db["devices"].values())
+            for did in affected:
+                dev = self.db["devices"].setdefault(did, {
+                    "id": did, "label": "", "blocked": False,
+                    "firstSeen": now, "lastSeen": now, "policy": {}})
+                dev["cutAt"] = now
             self.db["rev"] += 1
             self._save()
             self.log("DECISION", "CUT",
-                     {"target": want, "tokensRevoked": n, "rev": self.db["rev"]})
-            return {"ok": True, "revoked": n, "rev": self.db["rev"]}
+                     {"target": want, "tokensRevoked": n,
+                      "devices": sorted(affected), "rev": self.db["rev"]})
+            return {"ok": True, "revoked": n, "rev": self.db["rev"],
+                    "devices": sorted(affected)}
 
     def set_device(self, device, patch):
+        """Device policy is applied to that device's LIVE tokens immediately,
+        and disabling a device also cuts its requests so every audit tab
+        reports the same state."""
         with self.lock:
+            now = _now()
             dev = self.db["devices"].setdefault(device, {
                 "id": device, "label": "", "blocked": False,
-                "firstSeen": _now(), "lastSeen": _now(), "policy": {}})
+                "firstSeen": now, "lastSeen": now, "policy": {}})
+            patch = patch or {}
             for k in ("label", "blocked"):
-                if k in (patch or {}):
+                if k in patch:
                     dev[k] = patch[k]
+            applied = 0
             if isinstance(patch.get("policy"), dict):
-                dev.setdefault("policy", {}).update(patch["policy"])
-            dev["lastSeen"] = _now()
-            # Blocking a device also kills its live tokens right now.
+                p = patch["policy"]
+                dev.setdefault("policy", {}).update(p)
+                for rec in self.db["tokens"].values():
+                    if rec["device"] != device or rec.get("revoked"):
+                        continue
+                    if "hours" in p:
+                        hrs = max(1, min(int(p["hours"]), 24 * 30))
+                        rec["notBefore"] = now
+                        rec["notAfter"] = now + hrs * 3600000
+                    if "daily" in p:
+                        rec["daily"] = p["daily"]
+                    if "maxMinutes" in p:
+                        rec["maxMinutes"] = max(0, int(p["maxMinutes"]))
+                    if "once" in p:
+                        rec["once"] = bool(p["once"])
+                    if "terminals" in p:
+                        terms = list(p["terminals"] or ["*"])
+                        # Never lock the original applicant terminal out.
+                        for req in self.db["requests"].values():
+                            if req.get("tokenId") == rec["id"]:
+                                src = req.get("terminal")
+                                if (src and "*" not in terms
+                                        and src not in terms):
+                                    terms.append(src)
+                        rec["terminals"] = terms
+                    applied += 1
+            dev["lastSeen"] = now
             if dev.get("blocked"):
                 for rec in self.db["tokens"].values():
                     if rec["device"] == device and not rec.get("revoked"):
                         rec["revoked"] = True
-                        rec["revokedAt"] = _now()
+                        rec["revokedAt"] = now
+                cut_requests(self.db, {device})
+                dev["cutAt"] = now
                 self.db["rev"] += 1
+            elif "blocked" in patch:
+                dev["cutAt"] = None
             self._save()
             self.log("DECISION", "DEVICE_POLICY",
-                     {"device": device, "patch": patch or {}})
-            return {"ok": True}
+                     {"device": device, "patch": patch,
+                      "tokensUpdated": applied})
+            return {"ok": True, "tokensUpdated": applied}
 
     def set_default_policy(self, patch):
         with self.lock:
@@ -1230,22 +1346,65 @@ class AuditVault:
             return {"ok": True, "cleared": cleared}
 
     def data_view(self):
-        """Never returns a plaintext token or the vault key."""
+        """Never returns a plaintext token or the vault key. `effective` is
+        one authoritative status computed from the same rules as validate(),
+        so the Requests, Tokens and Devices tabs always agree."""
         with self.lock:
-            reqs = []
-            for r in self.db["requests"].values():
-                c = dict(r)
-                c.pop("issued", None)
-                reqs.append(c)
-            reqs.sort(key=lambda x: x.get("at", 0), reverse=True)
+            now = _now()
+            devices = self.db["devices"]
             toks = []
             for r in self.db["tokens"].values():
                 c = dict(r)
                 c.pop("hash", None)
+                c["effective"] = token_effective(r, devices, now)
                 toks.append(c)
             toks.sort(key=lambda x: x.get("createdAt", 0), reverse=True)
+            by_id = {c["id"]: c for c in toks}
+            by_device = {}
+            for c in toks:
+                by_device.setdefault(c.get("device"), []).append(c["effective"])
+
+            reqs = []
+            for r in self.db["requests"].values():
+                c = dict(r)
+                c.pop("issued", None)
+                tok = by_id.get(c.get("tokenId"))
+                if c.get("state") == "PENDING":
+                    c["effective"] = "PENDING"
+                elif c.get("state") in ("REJECTED", "REVOKED"):
+                    c["effective"] = c["state"]
+                else:
+                    c["effective"] = tok["effective"] if tok else c["state"]
+                reqs.append(c)
+            reqs.sort(key=lambda x: x.get("at", 0), reverse=True)
+
+            devs = []
+            for d in devices.values():
+                c = dict(d)
+                states = by_device.get(c["id"], [])
+                summary = {
+                    "total": len(states),
+                    "live": sum(1 for s in states if s == "GRANTED"),
+                    "cut": sum(1 for s in states
+                               if s in ("REVOKED", "DEVICE_BLOCKED")),
+                    "expired": sum(1 for s in states
+                                   if s in ("EXPIRED", "OUTSIDE_WINDOW",
+                                            "SESSION_LIMIT")),
+                }
+                c["tokenSummary"] = summary
+                if c.get("blocked"):
+                    c["effective"] = "DEVICE_BLOCKED"
+                elif not summary["total"]:
+                    c["effective"] = "NONE"
+                elif summary["live"]:
+                    c["effective"] = "GRANTED"
+                elif c.get("cutAt") and summary["cut"]:
+                    c["effective"] = "CUT"
+                else:
+                    c["effective"] = "EXPIRED"
+                devs.append(c)
             return {"requests": reqs[:200], "tokens": toks[:200],
-                    "devices": list(self.db["devices"].values()),
+                    "devices": devs,
                     "policy": self.db.get("policy", {}),
                     "rev": self.db.get("rev", 0),
                     "logs": self.logs(120), "keyMode": KEY_MODE}

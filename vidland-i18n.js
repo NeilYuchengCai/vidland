@@ -815,6 +815,16 @@
     'au.purge.note':      "Purge clears the audit ledger only. The civic register and the DPAPI-sealed key files remain intact.|La purga afecta solo al registro de auditoría. El registro civil y los archivos de claves protegidos permanecen intactos.|La purge ne concerne que le journal d'audit. Le registre civil et les fichiers de clés protégés restent intacts.|清零只针对审计台账，政务登记册与 DPAPI 封装的密钥文件保持不变。|清零僅針對審計臺帳，政務登記冊與 DPAPI 封裝之金鑰檔案維持不變。|Очистка затрагивает только журнал аудита. Гражданский реестр и защищённые файлы ключей остаются неизменными.",
     'au.purge.done':      "Audit ledger cleared. All issued tokens are void.|Registro de auditoría vaciado. Todos los tokens emitidos quedan anulados.|Journal d'audit effacé. Tous les jetons émis sont annulés.|审计台账已清空，所有已签发令牌全部失效。|審計臺帳已清空，所有已簽發權杖全部失效。|Журнал аудита очищен. Все выданные токены аннулированы.",
 
+    'au.eff.GRANTED': "In force|En vigor|En vigueur|生效中|生效中|Действует",
+    'au.eff.REVOKED': "Cut|Cortado|Révoqué|已掐断|已中止|Отозван",
+    'au.eff.DEVICE_BLOCKED': "Device disabled|Dispositivo deshabilitado|Appareil désactivé|设备已停用|裝置已停用|Устройство отключено",
+    'au.eff.EXPIRED': "Expired|Vencido|Expiré|已过期|已逾期|Истёк",
+    'au.eff.OUTSIDE_WINDOW': "Outside daily window|Fuera del horario permitido|Hors plage horaire|不在允许时段|不在許可時段|Вне разрешённого интервала",
+    'au.eff.SESSION_LIMIT': "Session limit reached|Límite de sesión alcanzado|Durée de session dépassée|会话时长已用尽|工作階段時限已滿|Лимит сеанса исчерпан",
+    'au.eff.CUT': "Access cut|Acceso cortado|Accès coupé|访问已掐断|存取已中止|Доступ отключён",
+    'au.eff.NONE': "No token|Sin token|Aucun jeton|无令牌|無權杖|Нет токена",
+    'au.dev.tokenSummary': "Tokens: {live} in force, {cut} cut|Tokens: {live} vigentes, {cut} cortados|Jetons : {live} en vigueur, {cut} révoqués|令牌：{live} 生效中 · {cut} 已掐断|權杖：{live} 生效中 · {cut} 已中止|Токены: {live} действ., {cut} отозв.",
+
     /* --- Mobile access gate (EN is the source of record) ------------- */
     'gt.kicker':          "ACCESS AUDIT · APPROVAL REQUIRED|AUDITORÍA DE ACCESO · APROBACIÓN REQUERIDA|AUDIT D'ACCÈS · APPROBATION REQUISE|访问审计 · 等待批准|訪問審計 · 待予核准|АУДИТ ДОСТУПА · ТРЕБУЕТСЯ ОДОБРЕНИЕ",
     'gt.title.pending':   "Access request submitted|Solicitud de acceso enviada|Demande d'accès envoyée|访问申请已提交|訪問申請已送交|Запрос доступа отправлен",
